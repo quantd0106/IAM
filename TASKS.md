@@ -97,7 +97,7 @@ pnpm -r list --depth -1
 
 ## M1.2 — Bootstrap Identity Server
 
-Status: [ ]
+Status: [x]
 
 Path:
 
