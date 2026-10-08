@@ -47,7 +47,7 @@ unless the task explicitly changes scope.
 
 Use:
 
-- Node.js 22 LTS
+- Node.js 24 LTS (minimum 24.15.0)
 - TypeScript
 - NestJS
 - Prisma

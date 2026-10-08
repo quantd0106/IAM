@@ -9,7 +9,7 @@ If README examples differ from this file, this file wins.
 ## 1. Platform
 
 ```text
-Node.js: 22 LTS
+Node.js: 24 LTS (minimum 24.15.0)
 Package manager: pnpm
 Monorepo: pnpm workspaces
 Backend: NestJS + TypeScript

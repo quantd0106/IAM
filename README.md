@@ -74,7 +74,7 @@ Các quyết định dưới đây là mặc định implementation. Không tự
 
 - Package manager: **pnpm**
 - Monorepo: **pnpm workspaces**
-- Node.js: **22 LTS**
+- Node.js: **24 LTS** (minimum **24.15.0**)
 - TypeScript: strict mode
 - Backend framework: **NestJS**
 - ORM: **Prisma**

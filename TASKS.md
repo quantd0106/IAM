@@ -65,7 +65,7 @@ Depends on: M0
 
 ## M1.1 — Initialize pnpm workspace
 
-Status: [ ]
+Status: [x]
 
 Deliverables:
 
@@ -80,7 +80,7 @@ docs/
 Requirements:
 
 - pnpm workspace
-- Node 22 engine declaration
+- Node >=24.15.0 <25 engine declaration
 - root scripts placeholder for lint/typecheck/test
 
 Acceptance criteria:
