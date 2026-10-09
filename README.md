@@ -586,3 +586,20 @@ docker compose stop
 ```
 
 Không dùng `docker compose down -v` nếu muốn giữ development database.
+
+## 20. Explicit local seed infrastructure
+
+Với PostgreSQL local đang healthy và `DATABASE_URL` trong package-local `.env`
+(hoặc shell environment), chạy từ repository root:
+
+```bash
+pnpm --filter identity-server seed
+```
+
+Lệnh tự generate Prisma Client rồi gọi `prisma db seed`, dùng `tsx prisma/seed.ts`.
+CLI chỉ cần database configuration, không bootstrap NestJS hoặc yêu cầu Redis/JWT/TOTP.
+M1.8 chỉ cung cấp infrastructure: kết nối thật, chạy `SELECT 1`, đóng connection
+và báo `Seed completed: 0 datasets applied.`; dataset hiện tại cố ý để trống.
+Chạy hai lần an toàn/idempotent, không ghi domain data hoặc thay đổi schema.
+Domain/demo seed data sẽ được thêm bởi các task sau khi models tương ứng tồn tại.
+Seed luôn explicit, không tự chạy khi install, build, start, migrations hoặc Compose startup.

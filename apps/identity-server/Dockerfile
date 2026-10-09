@@ -16,7 +16,8 @@ RUN pnpm install --frozen-lockfile
 # Root .dockerignore excludes host dependencies, generated output and env files.
 COPY apps/identity-server/ ./apps/identity-server/
 RUN pnpm --filter identity-server prisma:generate \
-    && pnpm --filter identity-server build
+    && pnpm --filter identity-server build \
+    && chown -R node:node apps/identity-server/src/generated
 
 WORKDIR /workspace/apps/identity-server
 USER node

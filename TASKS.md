@@ -210,7 +210,7 @@ starts all services.
 
 ## M1.8 — Seed infrastructure
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 

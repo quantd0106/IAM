@@ -5,5 +5,5 @@
     "noEmit": true,
     "incremental": false
   },
-  "include": ["prisma.config.ts"]
+  "include": ["prisma.config.ts", "prisma/**/*.ts"]
 }

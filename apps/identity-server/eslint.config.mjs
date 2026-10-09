@@ -17,7 +17,7 @@ export default defineConfig(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['prisma.config.ts'],
+          allowDefaultProject: ['prisma.config.ts', 'prisma/*.ts'],
           defaultProject: 'tsconfig.prisma.json',
         },
         tsconfigRootDir: import.meta.dirname,
