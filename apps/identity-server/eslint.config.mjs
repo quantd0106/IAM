@@ -16,7 +16,10 @@ export default defineConfig(
     extends: [js.configs.recommended, tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['prisma.config.ts'],
+          defaultProject: 'tsconfig.prisma.json',
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },

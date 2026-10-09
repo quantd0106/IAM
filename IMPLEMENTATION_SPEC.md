@@ -13,7 +13,7 @@ Node.js: 24 LTS (minimum 24.15.0)
 Package manager: pnpm
 Monorepo: pnpm workspaces
 Backend: NestJS + TypeScript
-ORM: Prisma
+ORM: Prisma ORM 7.x
 Database: PostgreSQL
 Ephemeral state: Redis
 ```

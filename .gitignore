@@ -3,3 +3,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 pnpm-debug.log*
+.env
+.env.*
+!.env.example
+**/generated/

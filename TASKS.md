@@ -143,7 +143,7 @@ Acceptance criteria:
 
 ## M1.4 — Add PostgreSQL + Prisma
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 
