@@ -15,7 +15,7 @@ Monorepo: pnpm workspaces
 Backend: NestJS + TypeScript
 ORM: Prisma ORM 7.x
 Database: PostgreSQL
-Ephemeral state: Redis
+Ephemeral state: Redis 8.x, official node-redis client (`redis` package)
 ```
 
 Applications:

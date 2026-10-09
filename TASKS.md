@@ -164,7 +164,7 @@ pnpm --filter identity-server prisma validate
 
 ## M1.5 — Add Redis
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 

@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit --incremental false && tsc --project tsconfig.prisma.json",
     "prisma": "prisma",
     "prisma:generate": "prisma generate",
+    "redis:check": "node --env-file-if-exists=.env dist/redis/redis.check.js",
     "test": "vitest run"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "pg": "^8.23.1",
+    "redis": "6.3.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
