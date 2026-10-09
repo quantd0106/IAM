@@ -12,6 +12,11 @@
   "scripts": {
     "lint": "pnpm -r --if-present run lint",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test"
+    "test": "pnpm -r --if-present run test",
+    "format": "prettier --write \"**/*.{ts,mjs,json}\"",
+    "format:check": "prettier --check \"**/*.{ts,mjs,json}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9"
   }
 }

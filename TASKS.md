@@ -127,7 +127,7 @@ pnpm --filter identity-server test
 
 ## M1.3 — Configure lint, format and typecheck
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 
@@ -1602,16 +1602,17 @@ M20 Thesis
 
 ---
 
-# Recommended First Codex Assignment
+# Codex Task Assignment Template
 
 ```text
-Read AGENTS.md, IMPLEMENTATION_SPEC.md, README.md and TASKS.md.
+Read AGENTS.md and IMPLEMENTATION_SPEC.md first, then TASKS.md and README.md.
 
-Implement only TASKS.md task M1.1 — Initialize pnpm workspace.
+Implement only the assigned atomic TASKS.md item: <task ID — title>.
 
-Do not implement M1.2 or later tasks.
+Check its dependencies and acceptance criteria before coding.
+Do not implement other tasks or expand the assigned scope.
 Before coding, inspect the repository and provide a short plan.
 After implementation, run the task's verification commands.
 Report files changed, commands run, results, and unresolved issues.
-Only mark M1.1 done if every acceptance criterion passes.
+Only mark the assigned task done if every acceptance criterion passes.
 ```

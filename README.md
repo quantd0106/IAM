@@ -396,9 +396,9 @@ iam-system/
 ├── docs/
 │   ├── architecture/
 │   ├── api/
-│   ├── thesis/
-│   └── IMPLEMENTATION_SPEC.md
+│   └── thesis/
 ├── AGENTS.md
+├── IMPLEMENTATION_SPEC.md
 ├── TASKS.md
 ├── docker-compose.yml
 ├── pnpm-workspace.yaml
