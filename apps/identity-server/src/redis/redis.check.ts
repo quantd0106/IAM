@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { NestFactory } from '@nestjs/core';
+import { Module } from '@nestjs/common';
+import { AppConfigModule } from '../config/config.module.js';
 import { buildRedisKey } from './redis-key.js';
 import { RedisModule } from './redis.module.js';
 import { RedisService } from './redis.service.js';
 
+@Module({ imports: [AppConfigModule, RedisModule] })
+class RedisCheckModule {}
+
 async function checkRedis(): Promise<void> {
-  const context = await NestFactory.createApplicationContext(RedisModule, {
+  const context = await NestFactory.createApplicationContext(RedisCheckModule, {
     logger: false,
     abortOnError: false,
   });

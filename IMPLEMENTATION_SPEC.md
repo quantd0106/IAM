@@ -695,7 +695,7 @@ Do not leak stack traces.
 
 ## 25. Environment Variables
 
-Planned names:
+Canonical names:
 
 ```text
 NODE_ENV
@@ -725,6 +725,15 @@ LOGIN_LOCK_SECONDS
 ```
 
 `.env.example` contains only names and safe development placeholders.
+
+The Identity Server loads its package-local `.env`, with shell variables taking
+precedence, and validates the complete configuration before listening.
+`IDENTITY_SERVER_PORT` is the only application port variable.
+URLs and signing/TOTP configuration are mandatory; errors identify variable names
+without printing values. Canonical security defaults above apply; `COOKIE_SECURE`
+defaults to false outside production and true in production. Production rejects
+`COOKIE_SECURE=false` and a non-HTTPS issuer. JWT key-file existence and TOTP key
+encoding/strength are validated only in their respective implementation tasks.
 
 Never commit production secrets.
 

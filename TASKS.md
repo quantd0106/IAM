@@ -180,7 +180,7 @@ Acceptance criteria:
 
 ## M1.6 — ConfigModule + env validation
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 

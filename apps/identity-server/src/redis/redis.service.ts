@@ -1,9 +1,12 @@
 import {
+  Inject,
   Injectable,
   Logger,
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Environment } from '../config/env.schema.js';
 import { createClient } from 'redis';
 
 @Injectable()
@@ -12,22 +15,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly client: ReturnType<typeof createClient>;
   private shuttingDown = false;
 
-  constructor() {
-    const url = process.env.REDIS_URL?.trim();
-
-    if (!url) {
-      throw new Error('REDIS_URL is required to initialize RedisService.');
-    }
+  constructor(@Inject(ConfigService) config: ConfigService<Environment, true>) {
+    const url = config.getOrThrow('REDIS_URL', { infer: true });
 
     try {
-      const parsedUrl = new URL(url);
-      if (
-        !['redis:', 'rediss:'].includes(parsedUrl.protocol) ||
-        !parsedUrl.hostname
-      ) {
-        throw new Error('Invalid Redis URL.');
-      }
-
       this.client = createClient({
         url,
         // Reject commands while disconnected instead of replaying queued writes.
@@ -43,7 +34,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         },
       });
     } catch {
-      throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL.');
+      throw new Error('Redis client configuration failed.');
     }
 
     // Never log the error object: messages/stacks can contain connection secrets.

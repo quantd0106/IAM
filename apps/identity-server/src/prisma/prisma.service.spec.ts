@@ -1,4 +1,6 @@
 import { Test } from '@nestjs/testing';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import type { Environment } from '../config/env.schema.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PrismaModule } from './prisma.module.js';
 import { PrismaService } from './prisma.service.js';
@@ -21,24 +23,26 @@ describe('PrismaModule', () => {
     vi.clearAllMocks();
   });
 
-  it.each([undefined, '', '   '])(
-    'rejects a missing or blank DATABASE_URL (%s)',
-    (databaseUrl) => {
-      vi.stubEnv('DATABASE_URL', databaseUrl);
-
-      expect(() => new PrismaService()).toThrow(
-        'DATABASE_URL is required to initialize PrismaService.',
-      );
-    },
-  );
+  it('requires the validated DATABASE_URL configuration', () => {
+    vi.stubEnv('DATABASE_URL', undefined);
+    expect(
+      () => new PrismaService(new ConfigService<Environment, true>()),
+    ).toThrow('DATABASE_URL');
+  });
 
   it('exports PrismaService and manages its connection lifecycle', async () => {
-    vi.stubEnv(
-      'DATABASE_URL',
-      'postgresql://iam:iam_dev_password@localhost:5432/iam?schema=public',
-    );
+    const config = new ConfigService<Environment, true>({
+      DATABASE_URL: 'postgresql://test:test@localhost:5432/test',
+    });
     const module = await Test.createTestingModule({
-      imports: [PrismaModule],
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          ignoreEnvFile: true,
+          ignoreEnvVars: true,
+        }),
+        PrismaModule,
+      ],
       providers: [
         {
           provide: 'prisma-consumer',
@@ -48,7 +52,10 @@ describe('PrismaModule', () => {
           }),
         },
       ],
-    }).compile();
+    })
+      .overrideProvider(ConfigService)
+      .useValue(config)
+      .compile();
     const { prisma } = module.get<{ prisma: PrismaService }>('prisma-consumer');
     const connect = vi.spyOn(prisma, '$connect');
     const disconnect = vi.spyOn(prisma, '$disconnect');

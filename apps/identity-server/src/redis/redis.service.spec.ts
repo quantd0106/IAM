@@ -1,5 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import type { Environment } from '../config/env.schema.js';
 import type { createClient } from 'redis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisModule } from './redis.module.js';
@@ -31,9 +33,11 @@ const { client, createClientMock } = vi.hoisted(() => {
 vi.mock('redis', () => ({ createClient: createClientMock }));
 
 describe('RedisService', () => {
+  const config = new ConfigService<Environment, true>({
+    REDIS_URL: 'redis://127.0.0.1:6379',
+  });
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379');
     client.isOpen = false;
     client.isReady = false;
     createClientMock.mockReturnValue(client);
@@ -62,27 +66,33 @@ describe('RedisService', () => {
     vi.restoreAllMocks();
   });
 
-  it.each([undefined, '', '   '])(
-    'rejects missing/blank REDIS_URL (%s)',
-    (url) => {
-      vi.stubEnv('REDIS_URL', url);
-      expect(() => new RedisService()).toThrow('REDIS_URL is required');
-      expect(createClientMock).not.toHaveBeenCalled();
-    },
-  );
+  it('requires validated REDIS_URL configuration', () => {
+    vi.stubEnv('REDIS_URL', undefined);
+    expect(
+      () => new RedisService(new ConfigService<Environment, true>()),
+    ).toThrow('REDIS_URL');
+    expect(createClientMock).not.toHaveBeenCalled();
+  });
 
-  it.each(['not-a-url', 'http://localhost:6379', 'redis://'])(
-    'rejects an invalid Redis URL (%s)',
-    (url) => {
-      vi.stubEnv('REDIS_URL', url);
-      expect(() => new RedisService()).toThrow('REDIS_URL must be a valid');
-      expect(createClientMock).not.toHaveBeenCalled();
-    },
-  );
+  it('sanitizes errors when creating the client', () => {
+    createClientMock.mockImplementationOnce(() => {
+      throw new Error('secret-bearing URL');
+    });
+    expect(() => new RedisService(config)).toThrow(
+      'Redis client configuration failed.',
+    );
+  });
 
   it('exports the service, installs an error listener before connect, and closes cleanly', async () => {
     const module = await Test.createTestingModule({
-      imports: [RedisModule],
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          ignoreEnvFile: true,
+          ignoreEnvVars: true,
+        }),
+        RedisModule,
+      ],
       providers: [
         {
           provide: 'redis-consumer',
@@ -92,7 +102,10 @@ describe('RedisService', () => {
           }),
         },
       ],
-    }).compile();
+    })
+      .overrideProvider(ConfigService)
+      .useValue(config)
+      .compile();
     const { redis } = module.get<{ redis: RedisService }>('redis-consumer');
 
     try {
@@ -111,7 +124,7 @@ describe('RedisService', () => {
   });
 
   it('uses capped exponential backoff with jitter and stops retrying on shutdown', async () => {
-    const service = new RedisService();
+    const service = new RedisService(config);
     const options = createClientMock.mock.calls[0]?.[0];
     const strategy = options?.socket?.reconnectStrategy;
     if (typeof strategy !== 'function')
@@ -134,7 +147,7 @@ describe('RedisService', () => {
     const log = vi
       .spyOn(Logger.prototype, 'error')
       .mockImplementation(() => undefined);
-    new RedisService();
+    new RedisService(config);
     const listener = client.on.mock.calls.find(
       ([event]) => event === 'error',
     )?.[1];
@@ -144,7 +157,7 @@ describe('RedisService', () => {
   });
 
   it('destroys the client and sanitizes initialization failures', async () => {
-    const service = new RedisService();
+    const service = new RedisService(config);
     client.isOpen = true;
     client.connect.mockRejectedValueOnce(
       new Error('redis://user:secret@localhost:6379'),
@@ -156,7 +169,7 @@ describe('RedisService', () => {
   });
 
   it('cancels reconnecting sockets during shutdown', async () => {
-    const service = new RedisService();
+    const service = new RedisService(config);
     client.isOpen = true;
     client.isReady = false;
     await service.onModuleDestroy();
@@ -165,7 +178,7 @@ describe('RedisService', () => {
   });
 
   it('does nothing on shutdown if the client is already closed', async () => {
-    await new RedisService().onModuleDestroy();
+    await new RedisService(config).onModuleDestroy();
     expect(client.close).not.toHaveBeenCalled();
     expect(client.destroy).not.toHaveBeenCalled();
   });
@@ -174,7 +187,7 @@ describe('RedisService', () => {
     const log = vi
       .spyOn(Logger.prototype, 'error')
       .mockImplementation(() => undefined);
-    const service = new RedisService();
+    const service = new RedisService(config);
     client.isOpen = true;
     client.isReady = true;
     client.close.mockRejectedValueOnce(new Error('close failed'));
@@ -186,7 +199,7 @@ describe('RedisService', () => {
   });
 
   it('delegates string operations and explicit seconds-based TTL to the client', async () => {
-    const service = new RedisService();
+    const service = new RedisService(config);
     await service.set('test:key', 'value');
     expect(client.set).toHaveBeenCalledWith('test:key', 'value');
     expect(await service.get('test:key')).toBe('value');
@@ -204,7 +217,7 @@ describe('RedisService', () => {
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     'rejects invalid TTL seconds (%s)',
     async (ttlSeconds) => {
-      const service = new RedisService();
+      const service = new RedisService(config);
       await expect(
         service.setWithTtl('test:key', 'value', ttlSeconds),
       ).rejects.toThrow(RangeError);
@@ -214,7 +227,7 @@ describe('RedisService', () => {
 
   it('propagates command failures to callers', async () => {
     client.get.mockRejectedValueOnce(new Error('command failed'));
-    await expect(new RedisService().get('test:key')).rejects.toThrow(
+    await expect(new RedisService(config).get('test:key')).rejects.toThrow(
       'command failed',
     );
   });
