@@ -559,3 +559,30 @@ Demo Applications
         ↓
 Testing / Benchmark / Thesis
 ```
+
+## 19. Local Docker Compose startup
+
+Chạy từ repository root với Docker đang hoạt động:
+
+```bash
+docker compose up -d --build --wait
+docker compose ps
+```
+
+Identity Server dùng Node 24.15.0 và pnpm 11.25.0; image tự install frozen
+lockfile, generate Prisma Client rồi build ứng dụng. PostgreSQL/Redis phải healthy
+trước khi Identity Server khởi động. Kiểm tra `http://localhost:3000/health`:
+HTTP 200, `{"status":"ok"}`.
+
+Compose cấp cấu hình development riêng với hostname `postgres`/`redis`, issuer
+public `http://localhost:3000` và JWT/TOTP placeholders (không phải key thật).
+Không cần copy `.env` cho Compose; `.env.example` vẫn dành cho chạy trên host.
+Không chạy seed hay migrations khi khởi động.
+
+Để dừng stack mà giữ PostgreSQL development data:
+
+```bash
+docker compose stop
+```
+
+Không dùng `docker compose down -v` nếu muốn giữ development database.

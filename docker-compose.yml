@@ -1,5 +1,38 @@
 # Local development only; these are not production credentials.
 services:
+  identity-server:
+    build:
+      context: .
+      dockerfile: apps/identity-server/Dockerfile
+    environment:
+      NODE_ENV: development
+      IDENTITY_SERVER_PORT: '3000'
+      DATABASE_URL: postgresql://iam:iam_dev_password@postgres:5432/iam?schema=public
+      REDIS_URL: redis://redis:6379
+      ISSUER_URL: http://localhost:3000
+      # Validation placeholders only; not real JWT/TOTP cryptographic material.
+      JWT_PRIVATE_KEY_PATH: ./dev-keys/placeholder-private.pem
+      JWT_PUBLIC_KEY_PATH: ./dev-keys/placeholder-public.pem
+      JWT_KEY_ID: development-placeholder
+      TOTP_ENCRYPTION_KEY: development-only-placeholder-not-a-real-key
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health', { signal: AbortSignal.timeout(3000) }).then(async (response) => { if (response.status !== 200 || (await response.json()).status !== 'ok') process.exit(1); }).catch(() => process.exit(1));"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   postgres:
     image: postgres:18-alpine
     environment:

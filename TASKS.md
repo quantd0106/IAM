@@ -190,7 +190,7 @@ Requirements:
 
 ## M1.7 — Docker Compose baseline
 
-Status: [ ]
+Status: [x]
 
 Services:
 
