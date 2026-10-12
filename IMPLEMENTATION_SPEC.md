@@ -609,6 +609,8 @@ A token intended for one API must not automatically be accepted by another.
 
 ## 21. Account State
 
+User primary IDs use PostgreSQL UUID, with Prisma's `uuid()` default.
+
 Suggested statuses:
 
 ```text

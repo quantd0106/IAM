@@ -226,7 +226,7 @@ Depends on: M1.4, M1.6
 
 ## M2.1 — User Prisma model
 
-Status: [ ]
+Status: [x]
 
 Fields:
 
