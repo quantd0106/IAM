@@ -263,7 +263,7 @@ Acceptance criteria:
 
 ## M2.3 — Argon2 password service
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
