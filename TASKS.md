@@ -306,7 +306,7 @@ This task does NOT issue OAuth tokens.
 
 ## M2.6 — Failed-login counter and temporary lock
 
-Status: [ ]
+Status: [x]
 
 Policy:
 

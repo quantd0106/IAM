@@ -652,6 +652,20 @@ pwdreset:{tokenHash}
 
 All ephemeral entries require explicit TTL where applicable.
 
+Failed password attempts for a known ACTIVE/unlocked User use
+`rate:{userId}:login-failure`. An atomic increment sets the TTL to
+`LOGIN_LOCK_SECONDS` only on the first failure; later failures preserve this fixed
+window. At `LOGIN_MAX_FAILURES`, a conditional PostgreSQL update establishes
+`User.lockedUntil` without extending an already-active lock. Successful password
+authentication deletes the counter before returning success; expired lock
+timestamps need not be cleared. Redis counter/reset or lock-write failures fail
+closed with sanitized internal errors.
+
+Redis connects/reconnects in the background and is not a prerequisite for basic
+HTTP startup or process-level `/health`. Offline commands are not queued;
+authentication operations requiring Redis state must fail closed while Redis is
+unavailable. No in-memory fallback is used.
+
 ---
 
 ## 23. Audit Events

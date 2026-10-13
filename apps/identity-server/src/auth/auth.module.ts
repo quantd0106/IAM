@@ -6,13 +6,16 @@ import { AuthController } from './auth.controller.js';
 import { RegistrationService } from './registration.service.js';
 import { RegisterValidationFilter } from './register-validation.filter.js';
 import { LoginValidationService } from './login-validation.service.js';
+import { LoginAttemptService } from './login-attempt.service.js';
+import { RedisModule } from '../redis/redis.module.js';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, RedisModule],
   controllers: [AuthController],
   providers: [
     RegistrationService,
     LoginValidationService,
+    LoginAttemptService,
     PasswordService,
     { provide: APP_FILTER, useClass: RegisterValidationFilter },
   ],

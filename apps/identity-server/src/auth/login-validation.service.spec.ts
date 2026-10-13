@@ -3,6 +3,8 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Credential, User } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
+import { ConfigService } from '@nestjs/config';
 import { PasswordService } from '../security/password/password.service.js';
 import { AuthModule } from './auth.module.js';
 import {
@@ -62,6 +64,8 @@ describe('LoginValidationService (isolated unit)', () => {
     findUnique.mockResolvedValue(user);
     verify.mockResolvedValue(true);
     module = await Test.createTestingModule({ imports: [AuthModule] })
+      .overrideProvider(RedisService)
+      .useValue({})
       .overrideProvider(PrismaService)
       .useValue({
         user: { findUnique, ...writeMethods },
@@ -72,6 +76,14 @@ describe('LoginValidationService (isolated unit)', () => {
       })
       .overrideProvider(PasswordService)
       .useValue({ verify, hash: hashPassword })
+      .useMocker((token) =>
+        token === ConfigService
+          ? new ConfigService({
+              LOGIN_MAX_FAILURES: 5,
+              LOGIN_LOCK_SECONDS: 900,
+            })
+          : undefined,
+      )
       .compile();
     service = module.get(LoginValidationService);
   });
@@ -170,11 +182,15 @@ describe('LoginValidationService (isolated unit)', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('rejects an incorrect password', async () => {
+  it('rejects an incorrect password with only the internal User UUID context', async () => {
     verify.mockResolvedValue(false);
     expect(
       await service.validate({ type: 'email', value: user.email }, rawPassword),
-    ).toEqual({ ok: false, reason: 'INVALID_CREDENTIALS' });
+    ).toEqual({
+      ok: false,
+      reason: 'INVALID_CREDENTIALS',
+      subjectUserId: user.id,
+    });
     expect(verify).toHaveBeenCalledExactlyOnceWith(hash, rawPassword);
   });
 

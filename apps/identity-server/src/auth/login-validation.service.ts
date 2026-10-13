@@ -8,7 +8,8 @@ export type LoginIdentifier =
 // Internal authentication result, not a response for an HTTP login endpoint.
 export type LoginValidationResult =
   | { ok: true; user: { id: string; email: string; username: string } }
-  | { ok: false; reason: 'INVALID_CREDENTIALS' | 'DISABLED' | 'LOCKED' };
+  | { ok: false; reason: 'INVALID_CREDENTIALS'; subjectUserId?: string }
+  | { ok: false; reason: 'DISABLED' | 'LOCKED' };
 
 @Injectable()
 export class LoginValidationService {
@@ -53,7 +54,12 @@ export class LoginValidationService {
       user.credential.passwordHash,
       rawPassword,
     );
-    if (!verified) return { ok: false, reason: 'INVALID_CREDENTIALS' };
+    if (!verified)
+      return {
+        ok: false,
+        reason: 'INVALID_CREDENTIALS',
+        subjectUserId: user.id,
+      };
     return {
       ok: true,
       user: { id: user.id, email: user.email, username: user.username },

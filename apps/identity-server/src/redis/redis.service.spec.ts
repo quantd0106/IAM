@@ -6,6 +6,10 @@ import type { createClient } from 'redis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisModule } from './redis.module.js';
 import { RedisService } from './redis.service.js';
+import type { INestApplication } from '@nestjs/common';
+import type { Server } from 'node:http';
+import request from 'supertest';
+import { HealthController } from '../health.controller.js';
 
 type ClientOptions = NonNullable<Parameters<typeof createClient>[0]>;
 
@@ -23,6 +27,12 @@ const { client, createClientMock } = vi.hoisted(() => {
     get: vi.fn<(key: string) => Promise<string | null>>(),
     del: vi.fn<(key: string) => Promise<number>>(),
     ttl: vi.fn<(key: string) => Promise<number>>(),
+    eval: vi.fn<
+      (
+        script: string,
+        options: { keys: string[]; arguments: string[] },
+      ) => Promise<unknown>
+    >(),
   };
   return {
     client,
@@ -59,6 +69,7 @@ describe('RedisService', () => {
     client.get.mockResolvedValue('value');
     client.del.mockResolvedValue(1);
     client.ttl.mockResolvedValue(10);
+    client.eval.mockResolvedValue(1);
   });
 
   afterEach(() => {
@@ -156,15 +167,68 @@ describe('RedisService', () => {
     expect(log).toHaveBeenCalledExactlyOnceWith('Redis connection error.');
   });
 
-  it('destroys the client and sanitizes initialization failures', async () => {
+  it('handles background connection rejection with a fixed sanitized log, without blocking bootstrap', async () => {
+    const log = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
     const service = new RedisService(config);
     client.isOpen = true;
     client.connect.mockRejectedValueOnce(
       new Error('redis://user:secret@localhost:6379'),
     );
-    await expect(service.onModuleInit()).rejects.toThrow(
+    expect(service.onModuleInit()).toBeUndefined();
+    await Promise.resolve();
+    expect(log).toHaveBeenCalledExactlyOnceWith(
       'Redis connection initialization failed.',
     );
+    expect(client.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('bootstraps HTTP /health while connection is pending and offline commands reject', async () => {
+    let rejectConnect!: (error: Error) => void;
+    const connecting = new Promise<void>((_, reject) => {
+      rejectConnect = reject;
+    });
+    client.connect.mockImplementation(() => {
+      client.isOpen = true;
+      return connecting;
+    });
+    client.del.mockRejectedValue(new Error('offline'));
+    client.eval.mockRejectedValue(new Error('offline'));
+    const module = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          ignoreEnvFile: true,
+          ignoreEnvVars: true,
+        }),
+        RedisModule,
+      ],
+      controllers: [HealthController],
+    })
+      .overrideProvider(ConfigService)
+      .useValue(config)
+      .compile();
+    const app = module.createNestApplication<INestApplication<Server>>({
+      logger: false,
+    });
+    try {
+      await app.init();
+      expect(client.isReady).toBe(false);
+      await request(app.getHttpServer())
+        .get('/health')
+        .expect(200)
+        .expect({ status: 'ok' });
+      const redis = module.get(RedisService);
+      await expect(redis.delete('test:key')).rejects.toThrow('offline');
+      await expect(redis.incrementWithTtl('test:key', 900)).rejects.toThrow(
+        'Redis counter increment failed.',
+      );
+    } finally {
+      await app.close();
+      rejectConnect(new Error('shutdown'));
+      await Promise.resolve();
+    }
     expect(client.destroy).toHaveBeenCalledOnce();
   });
 
@@ -230,5 +294,70 @@ describe('RedisService', () => {
     await expect(new RedisService(config).get('test:key')).rejects.toThrow(
       'command failed',
     );
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid atomic-counter TTL (%s)',
+    async (ttlSeconds) => {
+      await expect(
+        new RedisService(config).incrementWithTtl('test:key', ttlSeconds),
+      ).rejects.toThrow(RangeError);
+      expect(client.eval).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([1, 5])(
+    'uses one atomic INCR/first-EXPIRE script and returns validated count %i',
+    async (count) => {
+      client.eval.mockResolvedValue(count);
+      expect(
+        await new RedisService(config).incrementWithTtl(
+          'rate:test-uuid:login-failure',
+          900,
+        ),
+      ).toBe(count);
+      expect(client.eval).toHaveBeenCalledExactlyOnceWith(expect.any(String), {
+        keys: ['rate:test-uuid:login-failure'],
+        arguments: ['900'],
+      });
+      const script = client.eval.mock.calls[0]?.[0];
+      expect(script).toContain("redis.call('INCR', KEYS[1])");
+      expect(script).toContain('if count == 1 then');
+      expect(script).toContain("redis.call('EXPIRE', KEYS[1], ARGV[1])");
+      expect(client.get).not.toHaveBeenCalled();
+      expect(client.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    null,
+    undefined,
+    '1',
+    {},
+    0,
+    -1,
+    1.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects malformed atomic counter reply case %#', async (reply) => {
+    client.eval.mockResolvedValue(reply);
+    await expect(
+      new RedisService(config).incrementWithTtl('test:key', 900),
+    ).rejects.toEqual(new Error('Redis counter increment failed.'));
+  });
+
+  it('sanitizes atomic command errors without logging key/user/URL details', async () => {
+    const log = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const service = new RedisService(config);
+    client.eval.mockRejectedValue(
+      new Error('test-only private key/user/Redis URL marker'),
+    );
+    await expect(
+      service.incrementWithTtl('rate:test-uuid:login-failure', 900),
+    ).rejects.toEqual(new Error('Redis counter increment failed.'));
+    expect(log).not.toHaveBeenCalled();
   });
 });

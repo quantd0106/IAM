@@ -12,6 +12,8 @@ import {
   vi,
 } from 'vitest';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
+import { ConfigService } from '@nestjs/config';
 import { AuthModule } from './auth.module.js';
 import {
   RegistrationService,
@@ -31,10 +33,20 @@ describe('POST /auth/register (isolated HTTP)', () => {
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({ imports: [AuthModule] })
+      .overrideProvider(RedisService)
+      .useValue({})
       .overrideProvider(PrismaService)
       .useValue({})
       .overrideProvider(RegistrationService)
       .useValue({ register })
+      .useMocker((token) =>
+        token === ConfigService
+          ? new ConfigService({
+              LOGIN_MAX_FAILURES: 5,
+              LOGIN_LOCK_SECONDS: 900,
+            })
+          : undefined,
+      )
       .compile();
     app = module.createNestApplication<INestApplication<Server>>({
       logger: false,

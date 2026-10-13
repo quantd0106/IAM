@@ -22,6 +22,19 @@ async function checkRedis(): Promise<void> {
   const expiringKey = buildRedisKey(key, 'ttl');
 
   try {
+    // This explicit integration probe waits for readiness; production startup
+    // does not. Retry only a read, never authentication counter/reset commands.
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      try {
+        await redis.ttl(key);
+        break;
+      } catch {
+        if (Date.now() >= deadline)
+          throw new Error('Redis probe readiness timeout.');
+        await setTimeout(50);
+      }
+    }
     await redis.set(key, 'm1.5-ok');
     assert.equal(await redis.get(key), 'm1.5-ok');
     assert.equal(await redis.delete(key), 1);

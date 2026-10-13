@@ -6,6 +6,7 @@ import { validateEnvironment, type Environment } from './config/env.schema.js';
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module.js';
+import { RedisService } from './redis/redis.service.js';
 
 describe('Identity Server', () => {
   let app: INestApplication<Server>;
@@ -26,7 +27,10 @@ describe('Identity Server', () => {
       vi.stubEnv(name, String(value));
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(RedisService)
+      .useValue({})
+      .compile();
 
     app = moduleFixture.createNestApplication<INestApplication<Server>>();
     await app.init();

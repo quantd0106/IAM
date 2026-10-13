@@ -9,6 +9,14 @@ import { ConfigService } from '@nestjs/config';
 import type { Environment } from '../config/env.schema.js';
 import { createClient } from 'redis';
 
+const incrementWithTtlScript = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
+
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
@@ -43,13 +51,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async onModuleInit(): Promise<void> {
-    try {
-      await this.client.connect();
-    } catch {
+  onModuleInit(): void {
+    // Connect/reconnect in the background; process health is not Redis readiness.
+    // Offline commands still reject because disableOfflineQueue remains true.
+    void this.client.connect().catch(() => {
+      if (this.shuttingDown) return;
       if (this.client.isOpen) this.client.destroy();
-      throw new Error('Redis connection initialization failed.');
-    }
+      this.logger.error('Redis connection initialization failed.');
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -99,5 +108,29 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async ttl(key: string): Promise<number> {
     return this.client.ttl(key);
+  }
+
+  async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
+      throw new RangeError(
+        'Redis TTL must be a positive safe integer in seconds.',
+      );
+    }
+    try {
+      const count: unknown = await this.client.eval(incrementWithTtlScript, {
+        keys: [key],
+        arguments: [String(ttlSeconds)],
+      });
+      if (
+        typeof count !== 'number' ||
+        !Number.isSafeInteger(count) ||
+        count <= 0
+      )
+        throw new Error('Invalid counter reply.');
+      return count;
+    } catch {
+      // Never expose the key, command details or a sensitive driver cause.
+      throw new Error('Redis counter increment failed.');
+    }
   }
 }
