@@ -504,6 +504,26 @@ Password reset token:
 - one-time
 - store only hash/state
 
+Reset requests (`POST /auth/password-reset/request`) accept a strict email-only
+body, trim surrounding whitespace and preserve case. Every syntactically valid
+email receives HTTP 202 `{"status":"accepted"}`, including unknown, disabled or
+Credential-less accounts and operational failures; this does not promise equal
+timing. Only ACTIVE accounts with a Credential are eligible; temporary login
+locks and failed-login counters remain unchanged.
+
+Generate `randomBytes(32)` (256 bits), encode as base64url, then SHA-256 the raw
+token to lowercase hex. Store only `{"userId":"..."}` with explicit TTL under
+`buildRedisKey('pwdreset', tokenHash)` (runtime `pwdreset:<tokenHash>`, no literal
+braces). `PASSWORD_RESET_TTL_SECONDS` defaults to 900 (15 minutes), validated as a
+positive safe integer. Raw tokens are never persisted, logged or returned through
+HTTP. Deliver only after Redis persistence through an internal out-of-band
+boundary, currently a safe no-op placeholder without an email provider.
+Persistence failure prevents delivery; delivery failure leaves state until TTL
+expiry, both with generic 202 and only fixed sanitized operational logging.
+Multiple requests may create independent entries. M2.9 owns atomic one-time
+consumption/replay enforcement and completed-reset audit; M2.8 emits no reset
+audit event and does not replace passwords.
+
 ---
 
 ## 17. TOTP
@@ -751,6 +771,7 @@ COOKIE_SECURE
 
 LOGIN_MAX_FAILURES
 LOGIN_LOCK_SECONDS
+PASSWORD_RESET_TTL_SECONDS
 ```
 
 `.env.example` contains only names and safe development placeholders.

@@ -333,7 +333,7 @@ Acceptance criteria:
 
 ## M2.8 — Password reset request
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

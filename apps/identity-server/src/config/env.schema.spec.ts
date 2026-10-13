@@ -23,6 +23,7 @@ const complete = {
   COOKIE_SECURE: 'false',
   LOGIN_MAX_FAILURES: '5',
   LOGIN_LOCK_SECONDS: '900',
+  PASSWORD_RESET_TTL_SECONDS: '900',
 };
 const ttlNames = [
   'ACCESS_TOKEN_TTL_SECONDS',
@@ -30,6 +31,7 @@ const ttlNames = [
   'REFRESH_TOKEN_TTL_SECONDS',
   'SESSION_IDLE_TTL_SECONDS',
   'SESSION_ABSOLUTE_TTL_SECONDS',
+  'PASSWORD_RESET_TTL_SECONDS',
 ] as const;
 
 describe('environment validation', () => {
@@ -48,6 +50,7 @@ describe('environment validation', () => {
       COOKIE_SECURE: false,
       LOGIN_MAX_FAILURES: 5,
       LOGIN_LOCK_SECONDS: 900,
+      PASSWORD_RESET_TTL_SECONDS: 900,
     });
   });
 
@@ -97,6 +100,7 @@ describe('environment validation', () => {
       Infinity,
       0,
       -1,
+      Number.MAX_SAFE_INTEGER + 1,
     ]) {
       expect(() => validateEnvironment({ ...complete, [name]: value })).toThrow(
         name,
@@ -115,6 +119,16 @@ describe('environment validation', () => {
       }
     },
   );
+
+  it('defaults password reset TTL to 900 and accepts positive integer/string overrides', () => {
+    expect(validateEnvironment(required).PASSWORD_RESET_TTL_SECONDS).toBe(900);
+    for (const value of [60, '60']) {
+      expect(
+        validateEnvironment({ ...required, PASSWORD_RESET_TTL_SECONDS: value })
+          .PASSWORD_RESET_TTL_SECONDS,
+      ).toBe(60);
+    }
+  });
 
   it.each(['DATABASE_URL', 'REDIS_URL', 'ISSUER_URL'])(
     'rejects missing, blank, malformed and wrong-protocol %s',

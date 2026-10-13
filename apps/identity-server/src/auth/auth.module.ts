@@ -9,6 +9,11 @@ import { LoginValidationService } from './login-validation.service.js';
 import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { PasswordChangeService } from './password-change.service.js';
+import { PasswordResetRequestService } from './password-reset-request.service.js';
+import {
+  PASSWORD_RESET_DELIVERY,
+  noOpPasswordResetDelivery,
+} from './password-reset-delivery.js';
 
 @Module({
   imports: [PrismaModule, RedisModule],
@@ -18,6 +23,8 @@ import { PasswordChangeService } from './password-change.service.js';
     LoginValidationService,
     LoginAttemptService,
     PasswordChangeService,
+    PasswordResetRequestService,
+    { provide: PASSWORD_RESET_DELIVERY, useValue: noOpPasswordResetDelivery },
     PasswordService,
     { provide: APP_FILTER, useClass: RegisterValidationFilter },
   ],

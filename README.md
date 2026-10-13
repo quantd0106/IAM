@@ -617,3 +617,14 @@ với defaults hiện có. Sau commit, Nest Logger phát event tạm thời
 `{event: 'USER_REGISTERED', userId}`; chưa có persistent audit storage.
 Registration chỉ tạo tài khoản, không login, tạo session/cookie hoặc trả token.
 `GET /health` vẫn là process health độc lập với DB; registration cần PostgreSQL.
+
+## 22. Local password reset request API
+
+`POST /auth/password-reset/request` nhận strict JSON `{email}` (trim, giữ case).
+Email hợp lệ luôn nhận HTTP 202 `{"status":"accepted"}`, không cookie/token/account
+state, kể cả tài khoản không tồn tại, bị disabled hoặc lỗi xử lý nội bộ.
+ACTIVE User có Credential được tạo reset state `{userId}` trong Redis, lookup bằng
+SHA-256 của token random 256-bit/base64url; `PASSWORD_RESET_TTL_SECONDS` mặc định
+900 giây. Login lock/counter không thay đổi. Delivery hiện là internal no-op:
+chưa gửi email, không log/return raw token. Consume/reset/replay enforcement thuộc
+M2.9, chưa được triển khai. Chi tiết canonical nằm trong `IMPLEMENTATION_SPEC.md`.

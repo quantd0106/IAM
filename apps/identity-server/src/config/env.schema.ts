@@ -52,6 +52,7 @@ export const environmentSchema = z
       .optional(),
     LOGIN_MAX_FAILURES: positiveInteger.default(5),
     LOGIN_LOCK_SECONDS: positiveInteger.default(900),
+    PASSWORD_RESET_TTL_SECONDS: positiveInteger.default(900),
   })
   .superRefine((values, context) => {
     if (values.NODE_ENV !== 'production') return;

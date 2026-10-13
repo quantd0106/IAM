@@ -44,6 +44,7 @@ describe('POST /auth/register (isolated HTTP)', () => {
           ? new ConfigService({
               LOGIN_MAX_FAILURES: 5,
               LOGIN_LOCK_SECONDS: 900,
+              PASSWORD_RESET_TTL_SECONDS: 900,
             })
           : undefined,
       )
