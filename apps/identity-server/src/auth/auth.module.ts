@@ -8,6 +8,7 @@ import { RegisterValidationFilter } from './register-validation.filter.js';
 import { LoginValidationService } from './login-validation.service.js';
 import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
+import { PasswordChangeService } from './password-change.service.js';
 
 @Module({
   imports: [PrismaModule, RedisModule],
@@ -16,6 +17,7 @@ import { RedisModule } from '../redis/redis.module.js';
     RegistrationService,
     LoginValidationService,
     LoginAttemptService,
+    PasswordChangeService,
     PasswordService,
     { provide: APP_FILTER, useClass: RegisterValidationFilter },
   ],

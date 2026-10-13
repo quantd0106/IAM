@@ -474,6 +474,14 @@ foreign key to User (at most one Credential per User). Password material is stor
 only in `password_hash`; `password_updated_at` defaults to creation time and is
 not automatically updated for arbitrary record changes.
 
+Password change is an internal trusted-subject operation: verify the current
+password, reject exact unchanged input, then hash the new opaque password before
+a single compare-and-swap update matching `userId` and the previously read hash.
+The successful update explicitly sets `passwordUpdatedAt`; stale updates fail
+without retry. Only after success, emit the provisional Nest Logger event
+`{event: 'PASSWORD_CHANGED', userId}`. No public route, login-counter mutation,
+session/token revocation policy or persistent audit storage is added here.
+
 Hash:
 
 ```text

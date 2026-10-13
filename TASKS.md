@@ -322,7 +322,7 @@ Acceptance criteria:
 
 ## M2.7 — Change password
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
