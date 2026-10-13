@@ -206,11 +206,10 @@ describe('POST /auth/password-reset/request (isolated HTTP)', () => {
     }
   });
 
-  it.each([
-    '/auth/login',
-    '/auth/change-password',
-    '/auth/password-reset/consume',
-  ])('does not introduce future endpoint %s', async (path) => {
-    await request(app.getHttpServer()).post(path).send({}).expect(404);
-  });
+  it.each(['/auth/login', '/auth/change-password'])(
+    'does not introduce future endpoint %s',
+    async (path) => {
+      await request(app.getHttpServer()).post(path).send({}).expect(404);
+    },
+  );
 });

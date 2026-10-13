@@ -25,6 +25,7 @@ const { client, createClientMock } = vi.hoisted(() => {
       (key: string, value: string, options?: { EX: number }) => Promise<string>
     >(),
     get: vi.fn<(key: string) => Promise<string | null>>(),
+    getDel: vi.fn<(key: string) => Promise<string | null>>(),
     del: vi.fn<(key: string) => Promise<number>>(),
     ttl: vi.fn<(key: string) => Promise<number>>(),
     eval: vi.fn<
@@ -67,6 +68,7 @@ describe('RedisService', () => {
     });
     client.set.mockResolvedValue('OK');
     client.get.mockResolvedValue('value');
+    client.getDel.mockResolvedValue('value');
     client.del.mockResolvedValue(1);
     client.ttl.mockResolvedValue(10);
     client.eval.mockResolvedValue(1);
@@ -195,6 +197,7 @@ describe('RedisService', () => {
     });
     client.del.mockRejectedValue(new Error('offline'));
     client.eval.mockRejectedValue(new Error('offline'));
+    client.getDel.mockRejectedValue(new Error('offline'));
     const module = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -223,6 +226,9 @@ describe('RedisService', () => {
       await expect(redis.delete('test:key')).rejects.toThrow('offline');
       await expect(redis.incrementWithTtl('test:key', 900)).rejects.toThrow(
         'Redis counter increment failed.',
+      );
+      await expect(redis.getAndDelete('test:key')).rejects.toThrow(
+        'Redis atomic consume failed.',
       );
     } finally {
       await app.close();
@@ -294,6 +300,42 @@ describe('RedisService', () => {
     await expect(new RedisService(config).get('test:key')).rejects.toThrow(
       'command failed',
     );
+  });
+
+  it.each(['value', null])(
+    'delegates atomic GETDEL and returns the previous string or null (case %#)',
+    async (value) => {
+      client.getDel.mockResolvedValue(value);
+      expect(await new RedisService(config).getAndDelete('test:consume')).toBe(
+        value,
+      );
+      expect(client.getDel).toHaveBeenCalledExactlyOnceWith('test:consume');
+      expect(client.get).not.toHaveBeenCalled();
+      expect(client.del).not.toHaveBeenCalled();
+      expect(client.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it('sanitizes atomic consume failure without logging key/value/URL or driver causes', async () => {
+    const spies = [
+      vi.spyOn(Logger.prototype, 'error'),
+      vi.spyOn(Logger.prototype, 'log'),
+      vi.spyOn(Logger.prototype, 'warn'),
+      vi.spyOn(Logger.prototype, 'debug'),
+      vi.spyOn(Logger.prototype, 'verbose'),
+      vi.spyOn(Logger.prototype, 'fatal'),
+      vi.spyOn(console, 'error'),
+      vi.spyOn(console, 'log'),
+    ];
+    client.getDel.mockRejectedValue(
+      new Error('private key/value/redis://user:secret@host'),
+    );
+    await expect(
+      new RedisService(config).getAndDelete('test:consume'),
+    ).rejects.toEqual(new Error('Redis atomic consume failed.'));
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(client.get).not.toHaveBeenCalled();
+    expect(client.del).not.toHaveBeenCalled();
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(

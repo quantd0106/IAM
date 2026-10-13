@@ -43,6 +43,23 @@ export class RegisterValidationFilter extends BaseExceptionFilter {
       );
       return;
     }
+    if (
+      method === 'POST' &&
+      typeof path === 'string' &&
+      /^\/auth\/password-reset\/consume\/?$/i.test(path.split('?')[0])
+    ) {
+      // Preserve only the controller's fixed token-failure message; parser
+      // errors can contain arbitrary body fragments and must stay sanitized.
+      super.catch(
+        new BadRequestException(
+          exception.message === 'Invalid or expired password reset token.'
+            ? 'Invalid or expired password reset token.'
+            : 'Invalid password reset consume request.',
+        ),
+        host,
+      );
+      return;
+    }
     super.catch(exception, host);
   }
 }

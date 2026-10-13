@@ -10,6 +10,7 @@ import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetRequestService } from './password-reset-request.service.js';
+import { PasswordResetConsumeService } from './password-reset-consume.service.js';
 import {
   PASSWORD_RESET_DELIVERY,
   noOpPasswordResetDelivery,
@@ -24,6 +25,7 @@ import {
     LoginAttemptService,
     PasswordChangeService,
     PasswordResetRequestService,
+    PasswordResetConsumeService,
     { provide: PASSWORD_RESET_DELIVERY, useValue: noOpPasswordResetDelivery },
     PasswordService,
     { provide: APP_FILTER, useClass: RegisterValidationFilter },

@@ -19,6 +19,10 @@ import {
   RegistrationService,
   type SafeRegisteredUser,
 } from './registration.service.js';
+import {
+  PasswordResetConsumeService,
+  type PasswordResetConsumeResult,
+} from './password-reset-consume.service.js';
 
 describe('POST /auth/register (isolated HTTP)', () => {
   const user: SafeRegisteredUser = {
@@ -185,4 +189,178 @@ describe('POST /auth/register (isolated HTTP)', () => {
       expect(register).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('POST /auth/password-reset/consume (isolated HTTP)', () => {
+  const input = {
+    token: ' opaque test-only MixedCase e\u0301 token ',
+    newPassword: ' opaque test-only \u00e9 password ',
+  };
+  const consume =
+    vi.fn<
+      (token: string, password: string) => Promise<PasswordResetConsumeResult>
+    >();
+  let app: INestApplication<Server>;
+
+  beforeAll(async () => {
+    const module = await Test.createTestingModule({ imports: [AuthModule] })
+      .overrideProvider(RedisService)
+      .useValue({})
+      .overrideProvider(PrismaService)
+      .useValue({})
+      .overrideProvider(PasswordResetConsumeService)
+      .useValue({ consume })
+      .useMocker((token) =>
+        token === ConfigService
+          ? new ConfigService({
+              LOGIN_MAX_FAILURES: 5,
+              LOGIN_LOCK_SECONDS: 900,
+              PASSWORD_RESET_TTL_SECONDS: 900,
+            })
+          : undefined,
+      )
+      .compile();
+    app = module.createNestApplication<INestApplication<Server>>({
+      logger: false,
+    });
+    await app.init();
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consume.mockResolvedValue({ ok: true });
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('returns 204 without body/cookie and passes opaque inputs unchanged', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/auth/password-reset/consume')
+      .send(input)
+      .expect(204);
+    expect(response.text).toBe('');
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(consume).toHaveBeenCalledExactlyOnceWith(
+      input.token,
+      input.newPassword,
+    );
+  });
+
+  it('retains nonempty whitespace inputs without adding password policy', async () => {
+    await request(app.getHttpServer())
+      .post('/auth/password-reset/consume')
+      .send({ token: ' ', newPassword: ' ' })
+      .expect(204);
+    expect(consume).toHaveBeenCalledExactlyOnceWith(' ', ' ');
+  });
+
+  it.each(['unknown', 'expired', 'replayed', 'stale Credential'])(
+    'returns the same safe generic 400 for %s service result',
+    async () => {
+      consume.mockResolvedValueOnce({
+        ok: false,
+        reason: 'INVALID_OR_EXPIRED_TOKEN',
+      });
+      const response = await request(app.getHttpServer())
+        .post('/auth/password-reset/consume')
+        .send(input)
+        .expect(400);
+      expect(response.body as unknown).toEqual({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid or expired password reset token.',
+      });
+      expect(response.headers['set-cookie']).toBeUndefined();
+    },
+  );
+
+  it.each([
+    {},
+    { token: input.token },
+    { newPassword: input.newPassword },
+    { token: '', newPassword: input.newPassword },
+    { token: input.token, newPassword: '' },
+    { token: 123, newPassword: input.newPassword },
+    { token: input.token, newPassword: 123 },
+    { token: null, newPassword: input.newPassword },
+    { token: input.token, newPassword: null },
+    { ...input, userId: 'untrusted' },
+    null,
+    [],
+    'not-an-object',
+  ])(
+    'rejects invalid/non-strict input case %# without echoing secrets or calling service',
+    async (body) => {
+      const response = await request(app.getHttpServer())
+        .post('/auth/password-reset/consume')
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify(body))
+        .expect(400);
+      expect(response.body as unknown).toEqual({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid password reset consume request.',
+      });
+      expect(consume).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    '/auth/password-reset/consume',
+    '/AUTH/PASSWORD-RESET/CONSUME',
+    '/auth/password-reset/consume/',
+    '/auth/password-reset/consume?test=1',
+  ])('sanitizes malformed JSON on consume route variant %s', async (path) => {
+    const response = await request(app.getHttpServer())
+      .post(path)
+      .set('Content-Type', 'application/json')
+      .send(
+        '{"token":"token-secret-canary","newPassword":"password-secret-canary",',
+      )
+      .expect(400);
+    expect(response.body as unknown).toEqual({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: 'Invalid password reset consume request.',
+    });
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('preserves the generic token failure on uppercase/trailing-slash/query variants', async () => {
+    consume.mockResolvedValue({
+      ok: false,
+      reason: 'INVALID_OR_EXPIRED_TOKEN',
+    });
+    for (const path of [
+      '/AUTH/PASSWORD-RESET/CONSUME',
+      '/auth/password-reset/consume/',
+      '/auth/password-reset/consume?test=1',
+    ]) {
+      const response = await request(app.getHttpServer())
+        .post(path)
+        .send(input)
+        .expect(400);
+      expect(response.body as unknown).toEqual({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid or expired password reset token.',
+      });
+    }
+  });
+
+  it('fails closed with a sanitized 500 for operational errors instead of echoing provider details', async () => {
+    consume.mockRejectedValueOnce(
+      new Error('private ' + input.token + input.newPassword),
+    );
+    const response = await request(app.getHttpServer())
+      .post('/auth/password-reset/consume')
+      .send(input)
+      .expect(500);
+    expect(response.body as unknown).toEqual({
+      statusCode: 500,
+      error: 'Internal Server Error',
+      message: 'Password reset failed.',
+    });
+    expect(response.headers['set-cookie']).toBeUndefined();
+  });
 });

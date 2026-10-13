@@ -344,7 +344,7 @@ Acceptance criteria:
 
 ## M2.9 — Password reset consume
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

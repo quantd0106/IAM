@@ -92,6 +92,15 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.client.del(key);
   }
 
+  async getAndDelete(key: string): Promise<string | null> {
+    try {
+      return await this.client.getDel(key);
+    } catch {
+      // Do not forward the key/value, driver error or connection details.
+      throw new Error('Redis atomic consume failed.');
+    }
+  }
+
   async setWithTtl(
     key: string,
     value: string,

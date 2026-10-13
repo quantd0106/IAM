@@ -626,5 +626,16 @@ state, kể cả tài khoản không tồn tại, bị disabled hoặc lỗi x�
 ACTIVE User có Credential được tạo reset state `{userId}` trong Redis, lookup bằng
 SHA-256 của token random 256-bit/base64url; `PASSWORD_RESET_TTL_SECONDS` mặc định
 900 giây. Login lock/counter không thay đổi. Delivery hiện là internal no-op:
-chưa gửi email, không log/return raw token. Consume/reset/replay enforcement thuộc
-M2.9, chưa được triển khai. Chi tiết canonical nằm trong `IMPLEMENTATION_SPEC.md`.
+chưa gửi email, không log/return raw token. Chi tiết canonical nằm trong
+`IMPLEMENTATION_SPEC.md`.
+
+## 23. Local password reset consume API
+
+`POST /auth/password-reset/consume` nhận strict JSON `{token, newPassword}`;
+cả hai là string không rỗng, giữ nguyên whitespace/Unicode, không thêm complexity
+policy. Thành công trả 204 không body/cookie. Token unknown/expired/replay hoặc
+Credential không còn tồn tại trả cùng 400 `Invalid or expired password reset token.`
+GET precheck trước Argon2; atomic GETDEL quyết định one-time ownership. Sau GETDEL,
+token không được khôi phục kể cả DB lỗi; người dùng cần yêu cầu token mới.
+Chỉ cập nhật Credential và phát event `PASSWORD_RESET` sau DB success, không đổi
+account status/lock/counter hay revoke session/token. Delivery vẫn là no-op.

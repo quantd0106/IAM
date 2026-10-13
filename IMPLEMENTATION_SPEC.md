@@ -524,6 +524,25 @@ Multiple requests may create independent entries. M2.9 owns atomic one-time
 consumption/replay enforcement and completed-reset audit; M2.8 emits no reset
 audit event and does not replace passwords.
 
+Reset consumption (`POST /auth/password-reset/consume`) accepts strict JSON
+`{token, newPassword}`, both non-empty opaque strings without trimming,
+normalization or password complexity/history policy. Success is HTTP 204 with
+no body/cookie. Unknown, expired, replayed tokens, malformed/mismatched reset state
+and a missing Credential share HTTP 400 `Invalid or expired password reset token.`
+Malformed requests use a fixed sanitized 400; operational failures use safe 500.
+
+SHA-256 the exact raw token to the same lowercase-hex `pwdreset:<tokenHash>` key.
+A cheap Redis GET and strict `{userId}` UUID precheck happen before PasswordService
+hashing (Argon2id). Then official atomic GETDEL on the same key determines exclusive
+one-time ownership; revalidate consumed state and its match to the preview.
+Hashing failure occurs before consumption; after successful GETDEL the token is
+never restored, including PostgreSQL failure. Update only the existing Credential
+with `passwordHash` and explicit `passwordUpdatedAt`, requiring exactly one
+affected row. Emit `{event: 'PASSWORD_RESET', userId}` only after persistence.
+Raw tokens/passwords/hashes/Redis keys are never logged or returned. Account status,
+login locks and failure counters remain unchanged; no session/token revocation is
+implemented here. Redis failures fail closed without fallback.
+
 ---
 
 ## 17. TOTP

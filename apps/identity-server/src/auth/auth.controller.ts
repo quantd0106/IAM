@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Inject,
+  InternalServerErrorException,
   Post,
 } from '@nestjs/common';
 import { registerSchema } from './register.schema.js';
@@ -14,6 +15,11 @@ import {
 } from './registration.service.js';
 import { passwordResetRequestSchema } from './password-reset-request.schema.js';
 import { PasswordResetRequestService } from './password-reset-request.service.js';
+import { passwordResetConsumeSchema } from './password-reset-consume.schema.js';
+import {
+  PasswordResetConsumeService,
+  type PasswordResetConsumeResult,
+} from './password-reset-consume.service.js';
 
 @Controller('auth')
 export class AuthController {
@@ -22,6 +28,8 @@ export class AuthController {
     private readonly registration: RegistrationService,
     @Inject(PasswordResetRequestService)
     private readonly passwordReset: PasswordResetRequestService,
+    @Inject(PasswordResetConsumeService)
+    private readonly passwordResetConsume: PasswordResetConsumeService,
   ) {}
 
   @Post('register')
@@ -48,5 +56,24 @@ export class AuthController {
       // Never propagate internal account state or secret-bearing errors.
     }
     return { status: 'accepted' };
+  }
+
+  @Post('password-reset/consume')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async consumePasswordReset(@Body() body: unknown): Promise<void> {
+    const input = passwordResetConsumeSchema.safeParse(body);
+    if (!input.success)
+      throw new BadRequestException('Invalid password reset consume request.');
+    let result: PasswordResetConsumeResult;
+    try {
+      result = await this.passwordResetConsume.consume(
+        input.data.token,
+        input.data.newPassword,
+      );
+    } catch {
+      throw new InternalServerErrorException('Password reset failed.');
+    }
+    if (!result.ok)
+      throw new BadRequestException('Invalid or expired password reset token.');
   }
 }
