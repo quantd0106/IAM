@@ -289,7 +289,7 @@ Acceptance criteria:
 
 ## M2.5 — Login password validation
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 
