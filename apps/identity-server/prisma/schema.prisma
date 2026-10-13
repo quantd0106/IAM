@@ -24,5 +24,18 @@ model User {
   createdAt   DateTime   @default(now()) @map("created_at")
   updatedAt   DateTime   @updatedAt @map("updated_at")
 
+  credential Credential?
+
   @@map("users")
+}
+
+model Credential {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @unique @map("user_id") @db.Uuid
+  passwordHash      String   @map("password_hash")
+  passwordUpdatedAt DateTime @default(now()) @map("password_updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("credentials")
 }

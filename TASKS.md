@@ -249,7 +249,7 @@ Acceptance criteria:
 
 ## M2.2 — Credential Prisma model
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 

@@ -469,6 +469,11 @@ SSO is not token sharing between clients. Each client receives its own authoriza
 
 ## 16. Password Security
 
+Credential persistence uses a PostgreSQL UUID primary key and a unique `user_id`
+foreign key to User (at most one Credential per User). Password material is stored
+only in `password_hash`; `password_updated_at` defaults to creation time and is
+not automatically updated for arbitrary record changes.
+
 Hash:
 
 ```text
