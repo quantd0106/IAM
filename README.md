@@ -603,3 +603,17 @@ và báo `Seed completed: 0 datasets applied.`; dataset hiện tại cố ý đ�
 Chạy hai lần an toàn/idempotent, không ghi domain data hoặc thay đổi schema.
 Domain/demo seed data sẽ được thêm bởi các task sau khi models tương ứng tồn tại.
 Seed luôn explicit, không tự chạy khi install, build, start, migrations hoặc Compose startup.
+
+## 21. Local registration API
+
+`POST /auth/register` nhận JSON `{email, username, password}` và trả HTTP 201
+với đúng các field `{id, email, username, status, createdAt}`. Email/username được
+trim nhưng giữ nguyên case; password phải là string không rỗng và được giữ nguyên,
+không trim/normalize hoặc áp dụng complexity policy. Unknown fields bị từ chối.
+Body không hợp lệ trả 400 an toàn; email/username trùng theo DB uniqueness trả 409.
+
+PasswordService hash Argon2id trước transaction; User và Credential được tạo atomic
+với defaults hiện có. Sau commit, Nest Logger phát event tạm thời
+`{event: 'USER_REGISTERED', userId}`; chưa có persistent audit storage.
+Registration chỉ tạo tài khoản, không login, tạo session/cookie hoặc trả token.
+`GET /health` vẫn là process health độc lập với DB; registration cần PostgreSQL.

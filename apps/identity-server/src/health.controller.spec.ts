@@ -71,4 +71,25 @@ describe('Identity Server', () => {
       .expect(200)
       .expect({ status: 'ok' });
   });
+
+  it('keeps process health available when registration cannot reach PostgreSQL', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({
+        email: 'offline@example.invalid',
+        username: 'offline',
+        password: 'test-only offline input',
+      })
+      .expect(500);
+    expect(response.body as unknown).toEqual({
+      statusCode: 500,
+      error: 'Internal Server Error',
+      message: 'Registration failed.',
+    });
+    expect(response.headers['set-cookie']).toBeUndefined();
+    await request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect({ status: 'ok' });
+  }, 15000);
 });

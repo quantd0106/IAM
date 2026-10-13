@@ -274,7 +274,7 @@ Acceptance criteria:
 
 ## M2.4 — Registration API
 
-Status: [ ]
+Status: [x]
 
 Requirements:
 
