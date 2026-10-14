@@ -3,6 +3,8 @@ import { APP_FILTER } from '@nestjs/core';
 import { PrismaModule } from '../prisma/prisma.module.js';
 import { PasswordService } from '../security/password/password.service.js';
 import { AuthController } from './auth.controller.js';
+import { AuthSessionsController } from './auth-sessions.controller.js';
+import { IdpOwnSessionService } from './idp-own-session.service.js';
 import { RegistrationService } from './registration.service.js';
 import { RegisterValidationFilter } from './register-validation.filter.js';
 import { LoginValidationService } from './login-validation.service.js';
@@ -21,13 +23,14 @@ import {
 
 @Module({
   imports: [PrismaModule, RedisModule, SessionModule],
-  controllers: [AuthController],
+  controllers: [AuthController, AuthSessionsController],
   providers: [
     RegistrationService,
     LoginValidationService,
     LoginAttemptService,
     IdpLoginService,
     IdpLogoutService,
+    IdpOwnSessionService,
     PasswordChangeService,
     PasswordResetRequestService,
     PasswordResetConsumeService,

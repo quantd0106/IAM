@@ -439,7 +439,7 @@ Acceptance criteria:
 
 ## M3.6 — Own-session management
 
-Status: [ ]
+Status: [x]
 
 Functions:
 

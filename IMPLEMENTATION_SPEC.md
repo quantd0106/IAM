@@ -572,6 +572,48 @@ retry accepts DEL=0 and can complete persistent revocation before clearing the
 cookie. No OAuth tokens are involved. M3.6 owns own-session listing/selected
 revocation; privileged session revocation remains M3.7.
 
+M3.6 exposes only GET /auth/sessions and DELETE /auth/sessions/:sessionId for the
+authenticated user's own sessions. A dedicated IdpOwnSessionService obtains the
+subject from the configured Cookie parser, existing runtime touch, then a matching
+PostgreSQL current Session: same UUID/userId, ACTIVE and expiresAt > now. Runtime
+createdAt/absoluteExpiresAt must match persistent createdAt/expiresAt; an absent,
+expired, revoked, orphan or incoherent current session returns the same 401
+`Authentication required.`. Redis/Prisma operational failures instead return
+generic 500 `Session management failed.`. No caller-supplied userId, alternate
+current-session identifier or Bearer token is an authority. There is no global
+guard/middleware, Passport strategy or generic current-user decorator.
+
+GET returns 200 `{sessions: [...]}` with exactly id, createdAt, lastActivityAt,
+expiresAt, nullable ipAddress/userAgent and current. Dates are ISO-8601; activity
+comes from Redis, not the persistent snapshot. Candidate rows are restricted to
+the subject, ACTIVE and future expiresAt, ordered createdAt DESC then id DESC.
+Non-current candidates use read only, never touch; current reuses its single
+authentication touch result. Missing/corrupt/wrong-user or immutable-timestamp
+incoherent runtime entries are excluded without PostgreSQL cleanup writes. A
+genuine runtime error fails the whole list; unexpected omission of the current
+session fails closed. Listing emits no Set-Cookie, userId, runtime JSON/keys or
+secret/token fields. This is a live management view, not session history or an
+atomic cross-store snapshot.
+
+DELETE validates the canonical target UUID before any touch/mutation (400
+`Invalid session identifier.` for malformed input). Authentication is still only
+the current cookie. Ownership lookup is constrained by BOTH target ID and trusted
+subject userId before any target invalidation: target.userId must equal the
+authenticated subject. Unknown/cross-user targets share 404 `Session not found.`
+and never invoke logout/invalidation. Once proven, revoke reuses IdpLogoutService
+with the persistent row's canonical UUID; no duplicate revocation algorithm exists.
+Owned revoked or runtime-missing targets remain idempotent successes.
+
+Successful DELETE returns empty 204. Only self-revoke emits the existing clear()
+cookie; another-own revoke leaves the current cookie/session usable. Failures
+never clear the cookie or recreate Redis state. After self-revoke's partial DB
+failure, the runtime is gone and the next management request may return 401;
+POST /auth/logout retains its separate M3.5 retry behavior. Concurrent revokes
+that already authenticated remain safe/idempotent; a later request with a
+self-revoked cookie receives 401. No OAuth tokens, IP/device capture redesign,
+audit infrastructure or admin authority are added. M3.7 alone owns privileged
+target-user revocation.
+
 ---
 
 ## 15. SSO

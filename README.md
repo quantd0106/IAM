@@ -652,6 +652,8 @@ state creation thành công.
 Lỗi xác thực dùng chung 401, body/JSON sai dùng 400, lỗi nội bộ dùng 500; không phát
 cookie khi lỗi. Incoming cookie không được tái sử dụng làm ID mới. Không trả OAuth
 tokens hay tự authenticate/touch cookie trên các request khác.
+Session-management routes bên dưới xác thực/touch cookie riêng trong phạm vi đó;
+chưa có global session middleware.
 Sau build, chạy probe local explicit với PostgreSQL/Redis và Compose API đang up:
 `pnpm --filter identity-server login:check`. Probe dùng dữ liệu tạm và cleanup;
 chi tiết consistency/rollback nằm trong implementation spec.
@@ -672,3 +674,26 @@ OAuth token, public session-check/listing API hay logout audit mới.
 Sau build và Compose startup, chạy `pnpm --filter identity-server logout:check`.
 Probe kiểm tra stack thật, concurrent logout, Redis outage/reconnect và controlled
 DB revoke failure/retry; chỉ cleanup dữ liệu tạm của probe và đóng app/proxy/clients.
+
+## 26. Local own-session management API
+
+`GET /auth/sessions` và `DELETE /auth/sessions/:sessionId` chỉ xác thực bằng IdP
+cookie: parse → Redis touch → matching ACTIVE PostgreSQL session chưa hết hạn.
+Không nhận userId/current session ID từ body/query/header hoặc Bearer token.
+Thiếu/invalid/inconsistent session trả chung 401 `Authentication required.`;
+lỗi hạ tầng trả 500 `Session management failed.`.
+
+GET trả `{sessions: [...]}` với id, ISO createdAt/lastActivityAt/expiresAt,
+nullable ipAddress/userAgent và current. Chỉ list session ACTIVE còn runtime live
+của subject, theo createdAt DESC/id DESC; activity lấy từ Redis. Không refresh
+TTL của session khác, write PostgreSQL, phát cookie hay trả userId/secrets/tokens.
+
+DELETE kiểm tra UUID (400 nếu sai) và ownership trước khi reuse logout service;
+target unknown/cross-user đều 404, không invalidate target. Thành công trả 204:
+self-revoke clear cookie, revoke session khác không clear. Owned revoked/missing
+runtime targets vẫn idempotent; self-revoked cookie không còn authenticate được.
+Không có admin authority, OAuth/token, global auth guard hay persistent audit mới.
+
+Sau build/Compose startup chạy `pnpm --filter identity-server own-sessions:check`.
+Probe kiểm tra list/TTL, own revoke, cross-user IDOR, self/concurrent revoke,
+Redis outage/reconnect và chỉ cleanup dữ liệu/clients/server/proxy tạm của probe.
