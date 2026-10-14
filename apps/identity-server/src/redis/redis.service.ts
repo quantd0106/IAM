@@ -8,6 +8,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Environment } from '../config/env.schema.js';
 import { createClient } from 'redis';
+import { z } from 'zod';
+import { redisSessionStateScript } from './redis-session-state.script.js';
+
+export type RedisSessionStateOperation =
+  | { kind: 'create'; serializedState: string; idleTtlSeconds: number }
+  | { kind: 'read' }
+  | { kind: 'touch'; idleTtlSeconds: number };
 
 const incrementWithTtlScript = `
 local count = redis.call('INCR', KEYS[1])
@@ -117,6 +124,47 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async ttl(key: string): Promise<number> {
     return this.client.ttl(key);
+  }
+
+  /** Fixed session-only Lua; no raw client or caller-supplied script exposure. */
+  async sessionState(
+    key: string,
+    operation: RedisSessionStateOperation,
+  ): Promise<string | null> {
+    try {
+      if (
+        !key.startsWith('session:') ||
+        !z.uuid().safeParse(key.slice('session:'.length)).success ||
+        !['create', 'read', 'touch'].includes(operation.kind)
+      )
+        throw new Error('Invalid session operation.');
+      if (
+        operation.kind !== 'read' &&
+        (!Number.isSafeInteger(operation.idleTtlSeconds) ||
+          operation.idleTtlSeconds <= 0)
+      )
+        throw new Error('Invalid session TTL.');
+      if (
+        operation.kind === 'create' &&
+        typeof operation.serializedState !== 'string'
+      )
+        throw new Error('Invalid session input.');
+
+      const reply: unknown = await this.client.eval(redisSessionStateScript, {
+        keys: [key],
+        arguments: [
+          operation.kind,
+          operation.kind === 'create' ? operation.serializedState : '',
+          operation.kind === 'read' ? '' : String(operation.idleTtlSeconds),
+        ],
+      });
+      if (reply !== null && typeof reply !== 'string')
+        throw new Error('Invalid session reply.');
+      return reply;
+    } catch {
+      // No key, state, URL or driver cause chains reach callers or logs.
+      throw new Error('Redis IdP session operation failed.');
+    }
   }
 
   async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {

@@ -10,6 +10,9 @@ import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import { HealthController } from '../health.controller.js';
+import { redisSessionStateScript } from './redis-session-state.script.js';
+import { SessionModule } from '../session/session.module.js';
+import { IdpSessionStateService } from '../session/idp-session-state.service.js';
 
 type ClientOptions = NonNullable<Parameters<typeof createClient>[0]>;
 
@@ -46,6 +49,8 @@ vi.mock('redis', () => ({ createClient: createClientMock }));
 describe('RedisService', () => {
   const config = new ConfigService<Environment, true>({
     REDIS_URL: 'redis://127.0.0.1:6379',
+    SESSION_IDLE_TTL_SECONDS: 1800,
+    SESSION_ABSOLUTE_TTL_SECONDS: 28800,
   });
   beforeEach(() => {
     vi.resetAllMocks();
@@ -105,6 +110,7 @@ describe('RedisService', () => {
           ignoreEnvVars: true,
         }),
         RedisModule,
+        SessionModule,
       ],
       providers: [
         {
@@ -206,6 +212,7 @@ describe('RedisService', () => {
           ignoreEnvVars: true,
         }),
         RedisModule,
+        SessionModule,
       ],
       controllers: [HealthController],
     })
@@ -230,6 +237,28 @@ describe('RedisService', () => {
       await expect(redis.getAndDelete('test:key')).rejects.toThrow(
         'Redis atomic consume failed.',
       );
+      const sessions = module.get(IdpSessionStateService);
+      const id = '9d3d959a-c65b-4ffc-8086-ad563e59f198';
+      await expect(sessions.read(id)).rejects.toEqual(
+        new Error('Redis IdP session operation failed.'),
+      );
+      await expect(sessions.touch(id)).rejects.toEqual(
+        new Error('Redis IdP session operation failed.'),
+      );
+      await expect(
+        sessions.create(id, {
+          userId: id,
+          authTime: 0,
+          mfaLevel: 'password',
+          createdAt: 0,
+          lastActivityAt: 0,
+          absoluteExpiresAt: Number.MAX_SAFE_INTEGER,
+        }),
+      ).rejects.toEqual(new Error('Redis IdP session operation failed.'));
+      expect(createClientMock.mock.calls[0]?.[0].disableOfflineQueue).toBe(
+        true,
+      );
+      expect(client.set).not.toHaveBeenCalled();
     } finally {
       await app.close();
       rejectConnect(new Error('shutdown'));
@@ -401,5 +430,139 @@ describe('RedisService', () => {
       service.incrementWithTtl('rate:test-uuid:login-failure', 900),
     ).rejects.toEqual(new Error('Redis counter increment failed.'));
     expect(log).not.toHaveBeenCalled();
+  });
+
+  describe('fixed session-only transition', () => {
+    const key = 'session:9d3d959a-c65b-4ffc-8086-ad563e59f198';
+
+    it.each(['create', 'read', 'touch'] as const)(
+      'executes %s as exactly one fixed Lua operation',
+      async (kind) => {
+        client.eval.mockResolvedValue('state');
+        const operation =
+          kind === 'read'
+            ? { kind }
+            : kind === 'create'
+              ? { kind, serializedState: 'state', idleTtlSeconds: 1800 }
+              : { kind, idleTtlSeconds: 1800 };
+        expect(
+          await new RedisService(config).sessionState(key, operation),
+        ).toBe('state');
+        expect(client.eval).toHaveBeenCalledExactlyOnceWith(
+          redisSessionStateScript,
+          {
+            keys: [key],
+            arguments: [
+              kind,
+              kind === 'create' ? 'state' : '',
+              kind === 'read' ? '' : '1800',
+            ],
+          },
+        );
+        expect(client.get).not.toHaveBeenCalled();
+        expect(client.set).not.toHaveBeenCalled();
+        expect(client.del).not.toHaveBeenCalled();
+      },
+    );
+
+    it('accepts the absent reply without recreating a key', async () => {
+      client.eval.mockResolvedValue(null);
+      expect(
+        await new RedisService(config).sessionState(key, {
+          kind: 'touch',
+          idleTtlSeconds: 1800,
+        }),
+      ).toBeNull();
+      expect(client.set).not.toHaveBeenCalled();
+    });
+
+    it('keeps missing check, validation, server clock, activity and bounded expiry inside Lua', () => {
+      expect(redisSessionStateScript).toContain(
+        'if not raw then return nil end',
+      );
+      expect(redisSessionStateScript).toContain('pcall(cjson.decode, raw)');
+      expect(redisSessionStateScript).toContain('count == 6');
+      expect(redisSessionStateScript).toContain("redis.call('DEL', key)");
+      expect(
+        redisSessionStateScript.match(/redis.call\('TIME'\)/g),
+      ).toHaveLength(1);
+      expect(redisSessionStateScript).toContain(
+        "if operation == 'read' then return raw end",
+      );
+      expect(redisSessionStateScript).toContain('state.lastActivityAt = now');
+      expect(redisSessionStateScript).toContain(
+        'math.min(idleSeconds * 1000, state.absoluteExpiresAt - now)',
+      );
+      expect(redisSessionStateScript).toContain(
+        "redis.call('SET', key, raw, 'PXAT', string.format('%.0f', deadline))",
+      );
+    });
+
+    it.each([
+      'rate:test:login-failure',
+      'pwdreset:test',
+      'iam:session:test',
+      'session:not-a-uuid',
+      'session:{9d3d959a-c65b-4ffc-8086-ad563e59f198}',
+    ])(
+      'rejects keys outside the canonical UUID session namespace (case %#)',
+      async (invalidKey) => {
+        await expect(
+          new RedisService(config).sessionState(invalidKey, { kind: 'read' }),
+        ).rejects.toEqual(new Error('Redis IdP session operation failed.'));
+        expect(client.eval).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+      'rejects unsafe session TTL without EVAL (case %#)',
+      async (idleTtlSeconds) => {
+        await expect(
+          new RedisService(config).sessionState(key, {
+            kind: 'touch',
+            idleTtlSeconds,
+          }),
+        ).rejects.toEqual(new Error('Redis IdP session operation failed.'));
+        expect(client.eval).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([undefined, 0, 1, [], {}, true])(
+      'fails closed on an unexpected script reply (case %#)',
+      async (reply) => {
+        client.eval.mockResolvedValue(reply);
+        await expect(
+          new RedisService(config).sessionState(key, { kind: 'read' }),
+        ).rejects.toEqual(new Error('Redis IdP session operation failed.'));
+      },
+    );
+
+    it.each(['create', 'read', 'touch'] as const)(
+      'sanitizes %s driver errors and drops causes without logging',
+      async (kind) => {
+        const spies = [
+          vi.spyOn(Logger.prototype, 'error'),
+          vi.spyOn(Logger.prototype, 'log'),
+          vi.spyOn(Logger.prototype, 'warn'),
+          vi.spyOn(console, 'log'),
+          vi.spyOn(console, 'error'),
+        ];
+        client.eval.mockRejectedValue(
+          new Error('private session/key/state/redis://user:secret@host', {
+            cause: new Error('private driver cause'),
+          }),
+        );
+        const operation =
+          kind === 'read'
+            ? { kind }
+            : kind === 'create'
+              ? { kind, serializedState: 'private state', idleTtlSeconds: 1800 }
+              : { kind, idleTtlSeconds: 1800 };
+        await expect(
+          new RedisService(config).sessionState(key, operation),
+        ).rejects.toEqual(new Error('Redis IdP session operation failed.'));
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      },
+    );
   });
 });

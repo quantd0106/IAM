@@ -377,7 +377,7 @@ expires_at
 
 ## M3.2 — Redis IdP session state
 
-Status: [ ]
+Status: [x]
 
 Key:
 

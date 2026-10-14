@@ -414,8 +414,9 @@ The relation uses Prisma's default delete behavior; no account-deletion policy i
 introduced.
 
 This persistent record is not the Redis runtime session. M3.1 adds only persistence;
-Redis idle TTL/absolute-expiry runtime behavior belongs to M3.2, cookies to M3.3,
-and login integration to M3.4. No session lifecycle service or HTTP API is added.
+M3.2 adds only the Redis runtime create/read/touch service below. M3.2 does not
+write PostgreSQL, including Session.lastActivityAt. Cookies belong to M3.3 and
+login integration to M3.4; no session HTTP API is added by M3.2.
 
 Runtime store:
 
@@ -426,8 +427,12 @@ Redis
 Key:
 
 ```text
-session:{sessionId}
+session:<sessionId>
 ```
+
+The concrete key is exactly `session:<uuid>`, built with
+`buildRedisKey('session', sessionId)`. The session-state boundary validates the
+UUID; angle/curly braces are placeholders, never literal key characters.
 
 Values:
 
@@ -440,12 +445,36 @@ lastActivityAt
 absoluteExpiresAt
 ```
 
+Runtime JSON is a strict object containing exactly these six fields. userId is a
+UUID. All four timestamps are non-negative safe-integer Unix epoch milliseconds;
+absoluteExpiresAt must be after createdAt, authTime and lastActivityAt. mfaLevel
+is a non-empty opaque string in M3.2, not an assurance enum; its semantic MFA
+upgrade policy belongs to M10/M10.7.
+
 TTL policy:
 
 ```text
 idle timeout: 30 minutes
 absolute timeout: 8 hours
 ```
+
+The existing validated SESSION_IDLE_TTL_SECONDS (1800) and
+SESSION_ABSOLUTE_TTL_SECONDS (28800) defaults remain unchanged. The supplied
+absoluteExpiresAt is authoritative for runtime expiry. M3.4 will create the
+PostgreSQL Session and Redis state from the same absolute-expiry decision;
+M3.2 neither creates that row nor decides its expiresAt.
+
+Create writes only validated state, with expiry capped at the lesser of the idle
+lifetime and remaining absolute lifetime. Read does not refresh idle TTL. Touch
+represents activity: one fixed Redis Lua transition checks the existing key,
+validates all stored fields, obtains Redis TIME once, updates only lastActivityAt
+and writes the capped millisecond expiry (PXAT). The five other fields stay
+unchanged, including the absolute boundary. Missing/expired state cannot be
+resurrected by touch. Malformed or absolutely expired state is invalidated and
+returns null; Redis command failures throw fixed sanitized operational errors.
+
+No persistence/in-memory fallback or offline queued writes are used. Redis
+connect/reconnect remains independent of HTTP startup and process /health.
 
 Cookie:
 
