@@ -360,7 +360,7 @@ Depends on: M2.5, M1.5
 
 ## M3.1 — Session Prisma model
 
-Status: [ ]
+Status: [x]
 
 Fields:
 

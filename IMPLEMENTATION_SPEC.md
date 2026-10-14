@@ -403,6 +403,20 @@ MVP behavior:
 
 ## 14. Central IdP Session
 
+Persistent PostgreSQL baseline: `Session` maps to `sessions`, has a Prisma-generated
+UUID primary key and a required UUID `user_id` foreign key to User. One User may
+have many Sessions; `user_id` is indexed, not unique. SessionStatus contains only
+`ACTIVE` (default) and `REVOKED`. `ip_address` and `user_agent` are optional string
+metadata. `created_at` and `last_activity_at` default to now; last activity changes
+only through an explicit update, not `@updatedAt`. Required `expires_at` has no
+default and represents the absolute expiry boundary supplied by a later creator.
+The relation uses Prisma's default delete behavior; no account-deletion policy is
+introduced.
+
+This persistent record is not the Redis runtime session. M3.1 adds only persistence;
+Redis idle TTL/absolute-expiry runtime behavior belongs to M3.2, cookies to M3.3,
+and login integration to M3.4. No session lifecycle service or HTTP API is added.
+
 Runtime store:
 
 ```text
