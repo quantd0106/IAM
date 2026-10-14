@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 const nonEmptyString = z.string().trim().min(1);
+// HTTP token characters (RFC 9110, section 5.6.2). Never trim unsafe names.
+const cookieName = z
+  .string()
+  .min(1)
+  .refine((value) => !/[^!#$%&'*+.^_\x60|~0-9A-Za-z-]/.test(value));
 const positiveInteger = z
   .union([
     z.number(),
@@ -43,7 +48,7 @@ export const environmentSchema = z
     JWT_KEY_ID: nonEmptyString,
     // Encoding/strength and key-file existence belong to later cryptographic tasks.
     TOTP_ENCRYPTION_KEY: z.string().refine((value) => value.trim().length > 0),
-    COOKIE_NAME: nonEmptyString.default('iam.sid'),
+    COOKIE_NAME: cookieName.default('iam.sid'),
     COOKIE_SECURE: z
       .union([
         z.boolean(),

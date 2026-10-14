@@ -486,7 +486,29 @@ Secure: true in production
 Path: /
 ```
 
-Do not store access tokens in the central IdP session cookie.
+M3.3 provides a pure IdpSessionCookieService, exported alongside
+IdpSessionStateService by SessionModule. serialize(sessionId) returns one
+Set-Cookie header value; parse(cookieHeader) recognizes only the configured
+session cookie. Neither operation performs Redis/Prisma work or authenticates
+a user. M3.4 owns login and attaching the cookie to an HTTP response; M3.5 owns
+logout/clearing.
+
+COOKIE_NAME defaults to iam.sid and must contain only HTTP token-safe characters
+without trimming. The value is exactly the opaque UUID session identifier,
+validated with the canonical session-domain UUID schema; no signing/encryption,
+Redis state, user metadata or access/refresh/ID tokens are included.
+
+Path=/, HttpOnly and SameSite=Lax are always emitted. Secure follows the validated
+COOKIE_SECURE boolean, not a second NODE_ENV decision in the cookie service.
+Production requires Secure under the existing central configuration policy.
+M3.3 adds no Domain, Expires or Max-Age: this is a browser session cookie, while
+server-side expiry remains authoritative.
+
+Parsing uses case-sensitive exact cookie-name matching and strict UUID values.
+Unrelated cookies are ignored; missing, malformed or duplicate session cookies
+return null. Pair-leading SP/HTAB is tolerated, but the value is never trimmed,
+unquoted, URL-decoded or normalized. Recognizing a UUID does not establish that
+its server-side session exists or is valid. Cookie values/headers are never logged.
 
 ---
 

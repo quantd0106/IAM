@@ -403,7 +403,7 @@ Acceptance criteria:
 
 ## M3.3 — IdP session cookie
 
-Status: [ ]
+Status: [x]
 
 Cookie:
 

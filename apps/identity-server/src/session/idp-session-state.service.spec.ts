@@ -25,6 +25,8 @@ const state: IdpSessionState = {
 const config = new ConfigService<Environment, true>({
   SESSION_IDLE_TTL_SECONDS: 1800,
   SESSION_ABSOLUTE_TTL_SECONDS: 28800,
+  COOKIE_NAME: 'iam.sid',
+  COOKIE_SECURE: false,
 });
 
 const invalidStates: unknown[] = [

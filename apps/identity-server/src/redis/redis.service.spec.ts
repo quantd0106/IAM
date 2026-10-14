@@ -51,6 +51,8 @@ describe('RedisService', () => {
     REDIS_URL: 'redis://127.0.0.1:6379',
     SESSION_IDLE_TTL_SECONDS: 1800,
     SESSION_ABSOLUTE_TTL_SECONDS: 28800,
+    COOKIE_NAME: 'iam.sid',
+    COOKIE_SECURE: false,
   });
   beforeEach(() => {
     vi.resetAllMocks();

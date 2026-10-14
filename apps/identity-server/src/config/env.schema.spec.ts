@@ -259,4 +259,90 @@ describe('environment validation', () => {
       validateEnvironment({ ...complete, COOKIE_NAME: value }),
     ).toThrow('COOKIE_NAME');
   });
+
+  it.each([
+    'iam.sid',
+    'session',
+    'iam_session',
+    'session-id',
+    "!#$%&'*+-.^_\x60|~",
+    'MiXeD.Name123',
+  ])(
+    'accepts token-safe COOKIE_NAME without normalization (case %#)',
+    (name) => {
+      expect(
+        validateEnvironment({ ...required, COOKIE_NAME: name }).COOKIE_NAME,
+      ).toBe(name);
+    },
+  );
+
+  it.each([
+    '',
+    ' ',
+    'iam sid',
+    'iam.sid;',
+    'iam.sid,other',
+    'iam.sid\r\nX-Test: injected',
+    'iam.sid\n',
+    'iam.sid\r',
+    ' iam.sid',
+    'iam.sid ',
+    'iam.sid\t',
+    'iam.sid=other',
+    'iam.sid/other',
+    '"iam.sid"',
+    'iam.sid:other',
+    'iam.sid\\other',
+    'iam.sid(other)',
+    'iam.sid[other]',
+    'iam.sid@other',
+    'iam.sid?other',
+    'iam.sid\u00a0',
+    '未来',
+    'iam.sid\u200b',
+    ...Array.from(
+      { length: 32 },
+      (_, code) => 'iam.sid' + String.fromCharCode(code),
+    ),
+    'iam.sid' + String.fromCharCode(127),
+  ])(
+    'rejects unsafe COOKIE_NAME with only the variable name in its error (case %#)',
+    (name) => {
+      expect(() =>
+        validateEnvironment({ ...required, COOKIE_NAME: name }),
+      ).toThrowError(
+        new Error('Invalid environment configuration: COOKIE_NAME.'),
+      );
+    },
+  );
+
+  it.each(['development', 'test'])(
+    'preserves the COOKIE_NAME and COOKIE_SECURE defaults in %s',
+    (NODE_ENV) => {
+      expect(validateEnvironment({ ...required, NODE_ENV })).toMatchObject({
+        COOKIE_NAME: 'iam.sid',
+        COOKIE_SECURE: false,
+      });
+      expect(
+        validateEnvironment({ ...required, NODE_ENV, COOKIE_SECURE: true })
+          .COOKIE_SECURE,
+      ).toBe(true);
+    },
+  );
+
+  it.each([false, 'false'])(
+    'preserves production rejection of insecure cookies (case %#)',
+    (COOKIE_SECURE) => {
+      expect(() =>
+        validateEnvironment({
+          ...required,
+          NODE_ENV: 'production',
+          ISSUER_URL: 'https://id.example.test',
+          COOKIE_SECURE,
+        }),
+      ).toThrowError(
+        new Error('Invalid environment configuration: COOKIE_SECURE.'),
+      );
+    },
+  );
 });
