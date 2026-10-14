@@ -651,7 +651,24 @@ state creation thành công.
 
 Lỗi xác thực dùng chung 401, body/JSON sai dùng 400, lỗi nội bộ dùng 500; không phát
 cookie khi lỗi. Incoming cookie không được tái sử dụng làm ID mới. Không trả OAuth
-tokens, chưa logout hay tự authenticate/touch cookie trên các request khác.
+tokens hay tự authenticate/touch cookie trên các request khác.
 Sau build, chạy probe local explicit với PostgreSQL/Redis và Compose API đang up:
 `pnpm --filter identity-server login:check`. Probe dùng dữ liệu tạm và cleanup;
 chi tiết consistency/rollback nằm trong implementation spec.
+
+## 25. Local IdP logout API
+
+`POST /auth/logout` chỉ nhận session ID từ configured IdP cookie (`iam.sid` mặc
+định), qua parser hiện có. Thành công trả 204 không body và clearing Set-Cookie:
+`iam.sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` (thêm Secure theo config).
+Thiếu/malformed/duplicate cookie vẫn trả 204 và clear cookie, không gọi stores.
+
+Logout xóa Redis runtime state trước, rồi đổi Session ACTIVE thành REVOKED; giữ
+row, timestamps và metadata. Lặp/đồng thời hoặc session đã thiếu/revoked đều an
+toàn/idempotent. Lỗi Redis/DB trả generic 500, không clear cookie để có thể retry;
+nếu DB lỗi sau DEL, không tạo lại Redis state. Không có cross-store transaction,
+OAuth token, public session-check/listing API hay logout audit mới.
+
+Sau build và Compose startup, chạy `pnpm --filter identity-server logout:check`.
+Probe kiểm tra stack thật, concurrent logout, Redis outage/reconnect và controlled
+DB revoke failure/retry; chỉ cleanup dữ liệu tạm của probe và đóng app/proxy/clients.

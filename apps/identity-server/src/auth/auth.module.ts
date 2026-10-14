@@ -10,6 +10,7 @@ import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { SessionModule } from '../session/session.module.js';
 import { IdpLoginService } from './idp-login.service.js';
+import { IdpLogoutService } from './idp-logout.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetRequestService } from './password-reset-request.service.js';
 import { PasswordResetConsumeService } from './password-reset-consume.service.js';
@@ -26,6 +27,7 @@ import {
     LoginValidationService,
     LoginAttemptService,
     IdpLoginService,
+    IdpLogoutService,
     PasswordChangeService,
     PasswordResetRequestService,
     PasswordResetConsumeService,

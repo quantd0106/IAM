@@ -18,6 +18,7 @@
     "redis:check": "node --env-file-if-exists=.env dist/redis/redis.check.js",
     "session:check": "node --env-file-if-exists=.env dist/session/session-state.check.js",
     "login:check": "node --env-file-if-exists=.env dist/auth/login.check.js",
+    "logout:check": "node --env-file-if-exists=.env dist/auth/logout.check.js",
     "test": "vitest run"
   },
   "dependencies": {

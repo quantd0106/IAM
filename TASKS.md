@@ -429,7 +429,7 @@ Acceptance criteria:
 
 ## M3.5 — Logout
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

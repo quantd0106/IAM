@@ -541,7 +541,36 @@ Redis orphan. No rollback deletion/revocation API is added.
 
 Login issues no OAuth/access/refresh/ID token or authorization code, adds no
 persistent audit model or login event, and does not authenticate incoming cookies
-on unrelated requests. Logout remains M3.5 and authorization integration M5.4.
+on unrelated requests. Authorization integration belongs to M5.4.
+
+M3.5 exposes POST /auth/logout. The session identifier comes only from the standard
+Cookie header via IdpSessionCookieService.parse; body/query/path/custom headers
+cannot supply it. Missing, malformed or duplicate configured cookies skip
+server-side invalidation and return 204 with a clearing cookie. No session-check
+HTTP endpoint, tokens or logout audit event are introduced.
+
+For a valid UUID, IdpLogoutService first awaits IdpSessionStateService.invalidate:
+canonical UUID/key validation followed by Redis DEL of `session:<uuid>`, accepting
+both 0 and 1 and sanitizing failures. Only then does PostgreSQL Session.updateMany
+conditionally change that ID from ACTIVE to REVOKED. Count 0 is normal for unknown
+or already-revoked sessions. The row is retained; userId, timestamps and optional
+metadata are unchanged. Missing/expired Redis state is also a successful logout;
+subsequent session-state read returns null. Repeated/concurrent logout is
+idempotent and reveals no session existence, user or store state.
+
+Only after both operations succeed does the controller return empty HTTP 204 and
+attach IdpSessionCookieService.clear(). Its deterministic header is
+`iam.sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`, respecting the configured
+COOKIE_NAME and appending `; Secure` when COOKIE_SECURE is true. No Domain,
+dynamic Expires or metadata is added; login serialization/parsing stay unchanged.
+
+No distributed transaction exists between stores. Redis failure prevents DB
+revocation; DB failure after DEL leaves runtime state deleted. Either operational
+failure returns generic HTTP 500 `Logout failed.` without Set-Cookie, retaining
+the browser identifier for retry. Redis state is never recreated as rollback;
+retry accepts DEL=0 and can complete persistent revocation before clearing the
+cookie. No OAuth tokens are involved. M3.6 owns own-session listing/selected
+revocation; privileged session revocation remains M3.7.
 
 ---
 

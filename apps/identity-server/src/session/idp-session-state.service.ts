@@ -56,6 +56,16 @@ export class IdpSessionStateService {
     );
   }
 
+  async invalidate(sessionId: string): Promise<void> {
+    const key = this.key(sessionId);
+    try {
+      // DEL=0 is normal for expired state, retries and concurrent logouts.
+      await this.redis.delete(key);
+    } catch {
+      throw new Error('Redis IdP session operation failed.');
+    }
+  }
+
   private key(sessionId: string): string {
     if (!sessionIdSchema.safeParse(sessionId).success)
       throw new TypeError('Invalid IdP session identifier.');

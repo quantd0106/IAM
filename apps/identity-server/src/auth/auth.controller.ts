@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Inject,
@@ -13,6 +14,7 @@ import {
 import { HttpAdapterHost } from '@nestjs/core';
 import { IdpSessionCookieService } from '../session/idp-session-cookie.service.js';
 import { IdpLoginService, type IdpLoginResult } from './idp-login.service.js';
+import { IdpLogoutService } from './idp-logout.service.js';
 import { loginSchema } from './login.schema.js';
 import { registerSchema } from './register.schema.js';
 import {
@@ -37,6 +39,7 @@ export class AuthController {
     @Inject(PasswordResetConsumeService)
     private readonly passwordResetConsume: PasswordResetConsumeService,
     @Inject(IdpLoginService) private readonly loginService: IdpLoginService,
+    @Inject(IdpLogoutService) private readonly logoutService: IdpLogoutService,
     @Inject(IdpSessionCookieService)
     private readonly sessionCookies: IdpSessionCookieService,
     @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
@@ -66,6 +69,22 @@ export class AuthController {
       this.adapterHost.httpAdapter.setHeader(response, 'Set-Cookie', cookie);
     } catch {
       throw new InternalServerErrorException('Login failed.');
+    }
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(
+    @Headers('cookie') cookieHeader: string | undefined,
+    @Res({ passthrough: true }) response: unknown,
+  ): Promise<void> {
+    try {
+      const sessionId = this.sessionCookies.parse(cookieHeader);
+      if (sessionId !== null) await this.logoutService.logout(sessionId);
+      const cookie = this.sessionCookies.clear();
+      this.adapterHost.httpAdapter.setHeader(response, 'Set-Cookie', cookie);
+    } catch {
+      throw new InternalServerErrorException('Logout failed.');
     }
   }
 

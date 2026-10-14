@@ -75,6 +75,51 @@ describe('IdpSessionStateService', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it.each([0, 1])(
+    'invalidates with canonical DEL, accepting result %i',
+    async (count) => {
+      redis.delete.mockResolvedValue(count);
+      await expect(service.invalidate(sessionId)).resolves.toBeUndefined();
+      expect(redis.delete).toHaveBeenCalledExactlyOnceWith(key);
+      expect(redis.sessionState).not.toHaveBeenCalled();
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.setWithTtl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['', 'not-a-uuid', '{' + sessionId + '}', sessionId + ':suffix'])(
+    'rejects invalid invalidation ID before Redis (case %#)',
+    async (id) => {
+      await expect(service.invalidate(id)).rejects.toEqual(
+        new TypeError('Invalid IdP session identifier.'),
+      );
+      expect(redis.delete).not.toHaveBeenCalled();
+      expect(redis.sessionState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('sanitizes DEL rejection without causes, secret-bearing stack or logging', async () => {
+    const spies = (
+      ['error', 'log', 'warn', 'debug', 'verbose', 'fatal'] as const
+    ).map((method) => vi.spyOn(Logger.prototype, method));
+    const consoles = (['log', 'error', 'warn', 'info', 'debug'] as const).map(
+      (method) => vi.spyOn(console, method),
+    );
+    const privateMessage = 'redis://private:secret@host/' + key;
+    redis.delete.mockRejectedValue(
+      new Error(privateMessage, { cause: new Error('private cause') }),
+    );
+    const error: unknown = await service
+      .invalidate(sessionId)
+      .catch((error: unknown) => error);
+    expect(error).toEqual(new Error('Redis IdP session operation failed.'));
+    expect(error).not.toHaveProperty('cause');
+    expect((error as Error).stack).not.toContain(privateMessage);
+    for (const spy of [...spies, ...consoles])
+      expect(spy).not.toHaveBeenCalled();
+  });
+
   it('does not perform Redis commands in the constructor', () => {
     expect(redis.sessionState).not.toHaveBeenCalled();
   });

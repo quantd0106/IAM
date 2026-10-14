@@ -67,6 +67,51 @@ const invalidValues: unknown[] = [
 describe('IdpSessionCookieService (pure boundary)', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it.each([
+    { name: 'iam.sid', secure: false },
+    { name: 'iam.sid', secure: true },
+    { name: 'session.+id', secure: false },
+    { name: 'session.+id', secure: true },
+  ])(
+    'clears the exact configured cookie deterministically (case %#)',
+    ({ name, secure }) => {
+      const cookie = configure(name, secure);
+      const expected =
+        name +
+        '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' +
+        (secure ? '; Secure' : '');
+      expect(cookie.clear()).toBe(expected);
+      expect(cookie.clear()).toBe(expected);
+      expect(cookie.parse(cookie.clear())).toBeNull();
+      for (const forbidden of [
+        id,
+        otherId,
+        'Domain=',
+        'Expires=',
+        'userId',
+        'mfaLevel',
+        'access_token',
+        'refresh_token',
+        'id_token',
+        'password',
+        'secret',
+      ])
+        expect(cookie.clear()).not.toContain(forbidden);
+    },
+  );
+
+  it('does not log while clearing a cookie', () => {
+    const spies = (
+      ['error', 'log', 'warn', 'debug', 'verbose', 'fatal'] as const
+    ).map((method) => vi.spyOn(Logger.prototype, method));
+    const consoles = (['log', 'error', 'warn', 'info', 'debug'] as const).map(
+      (method) => vi.spyOn(console, method),
+    );
+    configure().clear();
+    for (const spy of [...spies, ...consoles])
+      expect(spy).not.toHaveBeenCalled();
+  });
+
   it('emits exactly the development session cookie and only the raw UUID as its value', () => {
     const cookie = configure();
     const header = cookie.serialize(id);

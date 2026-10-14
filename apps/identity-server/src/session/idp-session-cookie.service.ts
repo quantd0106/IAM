@@ -25,6 +25,14 @@ export class IdpSessionCookieService {
     );
   }
 
+  clear(): string {
+    return (
+      this.cookieName +
+      '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' +
+      (this.secure ? '; Secure' : '')
+    );
+  }
+
   /** Recognition only: a syntactically valid UUID is not an authenticated session. */
   parse(cookieHeader: string | undefined): string | null {
     if (typeof cookieHeader !== 'string') return null;
