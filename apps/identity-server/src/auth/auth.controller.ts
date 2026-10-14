@@ -7,7 +7,13 @@ import {
   Inject,
   InternalServerErrorException,
   Post,
+  Res,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { HttpAdapterHost } from '@nestjs/core';
+import { IdpSessionCookieService } from '../session/idp-session-cookie.service.js';
+import { IdpLoginService, type IdpLoginResult } from './idp-login.service.js';
+import { loginSchema } from './login.schema.js';
 import { registerSchema } from './register.schema.js';
 import {
   RegistrationService,
@@ -30,7 +36,38 @@ export class AuthController {
     private readonly passwordReset: PasswordResetRequestService,
     @Inject(PasswordResetConsumeService)
     private readonly passwordResetConsume: PasswordResetConsumeService,
+    @Inject(IdpLoginService) private readonly loginService: IdpLoginService,
+    @Inject(IdpSessionCookieService)
+    private readonly sessionCookies: IdpSessionCookieService,
+    @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
   ) {}
+
+  @Post('login')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async login(
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: unknown,
+  ): Promise<void> {
+    const input = loginSchema.safeParse(body);
+    if (!input.success) throw new BadRequestException('Invalid login request.');
+    let result: IdpLoginResult;
+    try {
+      result = await this.loginService.login(
+        input.data.identifier,
+        input.data.password,
+      );
+    } catch {
+      throw new InternalServerErrorException('Login failed.');
+    }
+    if (!result.ok)
+      throw new UnauthorizedException('Invalid login credentials.');
+    try {
+      const cookie = this.sessionCookies.serialize(result.sessionId);
+      this.adapterHost.httpAdapter.setHeader(response, 'Set-Cookie', cookie);
+    } catch {
+      throw new InternalServerErrorException('Login failed.');
+    }
+  }
 
   @Post('register')
   register(@Body() body: unknown): Promise<SafeRegisteredUser> {

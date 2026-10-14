@@ -420,7 +420,7 @@ Acceptance criteria:
 
 ## M3.4 — Complete login into IdP session
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

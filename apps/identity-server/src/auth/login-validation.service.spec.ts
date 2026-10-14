@@ -82,6 +82,10 @@ describe('LoginValidationService (isolated unit)', () => {
               LOGIN_MAX_FAILURES: 5,
               LOGIN_LOCK_SECONDS: 900,
               PASSWORD_RESET_TTL_SECONDS: 900,
+              SESSION_IDLE_TTL_SECONDS: 1800,
+              SESSION_ABSOLUTE_TTL_SECONDS: 28800,
+              COOKIE_NAME: 'iam.sid',
+              COOKIE_SECURE: false,
             })
           : undefined,
       )

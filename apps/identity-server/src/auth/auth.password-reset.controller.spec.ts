@@ -51,6 +51,10 @@ describe('POST /auth/password-reset/request (isolated HTTP)', () => {
               LOGIN_MAX_FAILURES: 5,
               LOGIN_LOCK_SECONDS: 900,
               PASSWORD_RESET_TTL_SECONDS: 900,
+              SESSION_IDLE_TTL_SECONDS: 1800,
+              SESSION_ABSOLUTE_TTL_SECONDS: 28800,
+              COOKIE_NAME: 'iam.sid',
+              COOKIE_SECURE: false,
             })
           : undefined,
       )
@@ -206,7 +210,7 @@ describe('POST /auth/password-reset/request (isolated HTTP)', () => {
     }
   });
 
-  it.each(['/auth/login', '/auth/change-password'])(
+  it.each(['/auth/change-password'])(
     'does not introduce future endpoint %s',
     async (path) => {
       await request(app.getHttpServer()).post(path).send({}).expect(404);

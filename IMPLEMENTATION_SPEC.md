@@ -510,6 +510,39 @@ return null. Pair-leading SP/HTAB is tolerated, but the value is never trimmed,
 unquoted, URL-decoded or normalized. Recognizing a UUID does not establish that
 its server-side session exists or is valid. Cookie values/headers are never logged.
 
+M3.4 exposes POST /auth/login with strict JSON
+`{identifier: {type: "email" | "username", value: string}, password: string}`.
+Both strings must be non-empty and are passed unchanged (no trimming, casefolding,
+Unicode normalization or email/username inference). Unknown fields are rejected.
+Malformed body/JSON returns sanitized 400. Unknown user, missing Credential,
+wrong password, disabled user and active lock all return the same 401
+`Invalid login credentials.`; operational failures return generic 500
+`Login failed.`. Failed responses never emit Set-Cookie.
+
+IdpLoginService delegates once to LoginAttemptService, preserving existing
+validation/counter/reset/lock behavior. After success it chooses one nowMs and
+computes absoluteExpiresAt using validated SESSION_ABSOLUTE_TTL_SECONDS, rejecting
+unsafe arithmetic or invalid Date range before session persistence. In a short
+Prisma interactive transaction it creates an ACTIVE Session (selecting only the
+Prisma-generated UUID), then writes Redis state for that UUID before commit.
+createdAt/lastActivityAt match nowMs in both stores; authTime is nowMs,
+absoluteExpiresAt matches PostgreSQL expiresAt, and mfaLevel is the opaque
+`"password"` value. Optional IP/User-Agent metadata is left null; no proxy policy
+is introduced.
+
+Only after transaction commit does AuthController serialize the UUID through
+IdpSessionCookieService, attach one Set-Cookie and return 204 with no response
+body. Incoming cookies and body-supplied identifiers never select/reuse the new
+Session ID; independent logins create independent sessions without revoking old
+ones. Redis write failure rolls PostgreSQL back. PostgreSQL creation failure
+does not write Redis. This is not a distributed transaction: final commit failure
+after Redis success emits no cookie and can leave only a TTL-bounded unreachable
+Redis orphan. No rollback deletion/revocation API is added.
+
+Login issues no OAuth/access/refresh/ID token or authorization code, adds no
+persistent audit model or login event, and does not authenticate incoming cookies
+on unrelated requests. Logout remains M3.5 and authorization integration M5.4.
+
 ---
 
 ## 15. SSO

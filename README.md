@@ -639,3 +639,19 @@ GET precheck trước Argon2; atomic GETDEL quyết định one-time ownership. 
 token không được khôi phục kể cả DB lỗi; người dùng cần yêu cầu token mới.
 Chỉ cập nhật Credential và phát event `PASSWORD_RESET` sau DB success, không đổi
 account status/lock/counter hay revoke session/token. Delivery vẫn là no-op.
+
+## 24. Local IdP login API
+
+`POST /auth/login` nhận strict JSON
+`{identifier: {type: "email" | "username", value}, password}`; hai string không
+rỗng được giữ nguyên, không tự suy luận email/username. Thành công trả 204 không
+body và một session cookie chứa UUID mới do PostgreSQL cấp, dùng cùng ID/absolute
+expiry cho Redis. Cookie chỉ được phát sau khi PostgreSQL transaction và Redis
+state creation thành công.
+
+Lỗi xác thực dùng chung 401, body/JSON sai dùng 400, lỗi nội bộ dùng 500; không phát
+cookie khi lỗi. Incoming cookie không được tái sử dụng làm ID mới. Không trả OAuth
+tokens, chưa logout hay tự authenticate/touch cookie trên các request khác.
+Sau build, chạy probe local explicit với PostgreSQL/Redis và Compose API đang up:
+`pnpm --filter identity-server login:check`. Probe dùng dữ liệu tạm và cleanup;
+chi tiết consistency/rollback nằm trong implementation spec.

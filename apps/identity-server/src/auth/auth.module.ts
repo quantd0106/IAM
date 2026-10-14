@@ -8,6 +8,8 @@ import { RegisterValidationFilter } from './register-validation.filter.js';
 import { LoginValidationService } from './login-validation.service.js';
 import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
+import { SessionModule } from '../session/session.module.js';
+import { IdpLoginService } from './idp-login.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetRequestService } from './password-reset-request.service.js';
 import { PasswordResetConsumeService } from './password-reset-consume.service.js';
@@ -17,12 +19,13 @@ import {
 } from './password-reset-delivery.js';
 
 @Module({
-  imports: [PrismaModule, RedisModule],
+  imports: [PrismaModule, RedisModule, SessionModule],
   controllers: [AuthController],
   providers: [
     RegistrationService,
     LoginValidationService,
     LoginAttemptService,
+    IdpLoginService,
     PasswordChangeService,
     PasswordResetRequestService,
     PasswordResetConsumeService,

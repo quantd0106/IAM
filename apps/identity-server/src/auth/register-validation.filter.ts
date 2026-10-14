@@ -7,7 +7,7 @@ import {
 import { BaseExceptionFilter, HttpAdapterHost } from '@nestjs/core';
 
 // Body-parser errors occur before controller filters. Register globally but
-// sanitize only registration/reset requests, including Express route variants.
+// sanitize only registration/reset/login requests, including Express variants.
 @Catch(BadRequestException)
 export class RegisterValidationFilter extends BaseExceptionFilter {
   constructor(
@@ -21,6 +21,14 @@ export class RegisterValidationFilter extends BaseExceptionFilter {
     const adapter = this.adapterHost.httpAdapter;
     const method: unknown = adapter.getRequestMethod(request);
     const path: unknown = adapter.getRequestUrl(request);
+    if (
+      method === 'POST' &&
+      typeof path === 'string' &&
+      /^\/auth\/login\/?$/i.test(path.split('?')[0])
+    ) {
+      super.catch(new BadRequestException('Invalid login request.'), host);
+      return;
+    }
     if (
       method === 'POST' &&
       typeof path === 'string' &&
