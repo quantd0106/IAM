@@ -729,10 +729,14 @@ của probe và đóng clients, không tạo admin endpoint/server.
 
 ## 28. Interim authorization-request validation
 
-`GET /oauth/authorize` hiện chỉ parse/validate request (M5.1/M5.2), chưa thực hiện
+`GET /oauth/authorize` hiện chỉ parse/validate request (M5.1-M5.3), chưa thực hiện
 authorization flow. Request hợp lệ trả 204 không body, Location hoặc Set-Cookie.
-Client/redirect được kiểm tra exact; scope chỉ kiểm tra cú pháp, chưa tính granted
-scopes. State bắt buộc, exact `openid` cần nonce. PUBLIC bắt buộc đủ cặp PKCE;
+Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
+ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
+exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
+Granted scopes loại duplicate theo thứ tự requested đầu tiên, chỉ là transient
+internal result, không persistence/HTTP body. Lỗi scope lookup trả safe 500.
+State bắt buộc, exact `openid` cần nonce. PUBLIC bắt buộc đủ cặp PKCE;
 confidential được bỏ cả hai field hoặc gửi đủ cặp. Method phải exact `S256`,
 challenge đúng 43 ký tự `[A-Za-z0-9_-]`, không padding/trim/repair. Chưa xử lý hay
 hash/verify `code_verifier`; việc đó thuộc M6.3.
@@ -743,6 +747,6 @@ toàn. Chi tiết contract nằm trong implementation spec; M5.4-M5.6 sẽ thay 
 204 tạm thời bằng flow session/authorization. Không có code/token/session mới.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
-Probe kiểm tra PostgreSQL/HTTP thật, M5.1 regressions và M5.2 PKCE matrix, read-only
+Probe kiểm tra PostgreSQL/HTTP thật, M5.1/M5.2 regressions và M5.3 scope policy, read-only
 counters và disabled fixture chỉ rollback; đối chiếu Redis key/value trước–sau,
 giữ nguyên canonical seed data và đóng HTTP servers/DB/Redis clients tạm.

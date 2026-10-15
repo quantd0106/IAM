@@ -12,6 +12,7 @@ import {
   ClientLookupService,
   type EnabledClient,
 } from '../client-registry/client-lookup.service.js';
+import { ScopeLookupService } from '../client-registry/scope-lookup.service.js';
 import { AuthorizationRequestService } from './authorization-request.service.js';
 
 const query = {
@@ -26,6 +27,7 @@ const query = {
 };
 describe('AuthorizationRequestService', () => {
   const lookup = vi.fn<ClientLookupService['requireEnabledClient']>();
+  const allowedLookup = vi.fn<ScopeLookupService['getAllowedScopeNames']>();
   let service: AuthorizationRequestService;
   let client: EnabledClient;
   let logs: MockInstance[];
@@ -41,7 +43,11 @@ describe('AuthorizationRequestService', () => {
       redirectUris: ['http://localhost:3200/callback'],
     };
     lookup.mockResolvedValue(client);
-    service = new AuthorizationRequestService({ requireEnabledClient: lookup });
+    allowedLookup.mockResolvedValue(['email', 'openid', 'profile']);
+    service = new AuthorizationRequestService(
+      { requireEnabledClient: lookup },
+      { getAllowedScopeNames: allowedLookup },
+    );
     logs = [
       ...(['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
         vi.spyOn(console, method).mockImplementation(() => undefined),
@@ -67,8 +73,14 @@ describe('AuthorizationRequestService', () => {
       ok: true,
       client,
       request: { ...query, scope: ['openid', 'profile', 'email'] },
+      grantedScopes: ['openid', 'profile', 'email'],
     });
     expect(lookup).toHaveBeenCalledExactlyOnceWith('student-spa');
+    expect(allowedLookup).toHaveBeenCalledExactlyOnceWith(client.id);
+    expect(allowedLookup).not.toHaveBeenCalledWith(client.clientId);
+    expect(lookup.mock.invocationCallOrder[0]).toBeLessThan(
+      allowedLookup.mock.invocationCallOrder[0],
+    );
   });
   it.each(['banking-web', 'admin-portal'])(
     'does not force PKCE for enabled confidential %s',
@@ -237,22 +249,181 @@ describe('AuthorizationRequestService', () => {
       service.validate({ ...query, code_challenge: 'x' }),
     ).rejects.toThrow('Authorization request failed.');
   });
-  it('accepts syntactically valid unregistered scopes without querying allowed scopes or granting them', async () => {
-    const input = { ...query, nonce: undefined };
+  it.each([
+    'openid banking.transactions.read',
+    'openid definitely.unknown',
+    'OpenID',
+    'OPENID',
+    'custom.scope OpenID custom.scope',
+    '%6fpenid',
+  ])(
+    'rejects any unassigned exact scope token, not a partial grant (%#)',
+    async (scope) => {
+      expect(await service.validate({ ...query, scope })).toEqual({
+        ok: false,
+        error: 'invalid_scope',
+      });
+      expect(allowedLookup).toHaveBeenCalledExactlyOnceWith(client.id);
+    },
+  );
+  it.each(['student-spa', 'banking-web', 'admin-portal'])(
+    'enforces seeded-style allowed assignments for %s, not client-type defaults',
+    async (clientId) => {
+      client.clientId = clientId;
+      client.clientType =
+        clientId === 'student-spa' ? 'PUBLIC' : 'CONFIDENTIAL';
+      if (clientId === 'banking-web')
+        allowedLookup.mockResolvedValue([
+          'email',
+          'openid',
+          'profile',
+          'banking.transactions.read',
+        ]);
+      expect(
+        (await service.validate({ ...query, client_id: clientId })).ok,
+      ).toBe(true);
+      const result = await service.validate({
+        ...query,
+        client_id: clientId,
+        scope: 'openid banking.transactions.read',
+      });
+      if (clientId === 'banking-web') {
+        expect(result.ok).toBe(true);
+        if (result.ok)
+          expect(result.grantedScopes).toEqual([
+            'openid',
+            'banking.transactions.read',
+          ]);
+      } else expect(result).toEqual({ ok: false, error: 'invalid_scope' });
+      if (clientId === 'admin-portal')
+        expect(
+          await service.validate({
+            ...query,
+            client_id: clientId,
+            scope: 'banking.transactions.read',
+          }),
+        ).toEqual({ ok: false, error: 'invalid_scope' });
+    },
+  );
+  it('does not case-fold an assigned banking scope', async () => {
+    client.clientType = 'CONFIDENTIAL';
+    allowedLookup.mockResolvedValue(['banking.transactions.read']);
+    expect(
+      await service.validate({ ...query, scope: 'BANKING.TRANSACTIONS.READ' }),
+    ).toEqual({ ok: false, error: 'invalid_scope' });
+  });
+  it('preserves requested duplicates while exposing an independent deduplicated transient grant', async () => {
+    const input = Object.freeze({
+      ...query,
+      scope: 'profile openid profile email openid',
+    });
+    const result = await service.validate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) expect.fail('Expected valid grant.');
+    expect(result.request.scope).toEqual([
+      'profile',
+      'openid',
+      'profile',
+      'email',
+      'openid',
+    ]);
+    expect(result.grantedScopes).toEqual(['profile', 'openid', 'email']);
+    result.grantedScopes.push('caller-only');
+    expect(result.request.scope).toEqual([
+      'profile',
+      'openid',
+      'profile',
+      'email',
+      'openid',
+    ]);
+    expect(input.scope).toBe('profile openid profile email openid');
+    expect(Object.keys(result).sort()).toEqual([
+      'client',
+      'grantedScopes',
+      'ok',
+      'request',
+    ]);
+  });
+  it('does not infer defaults and reads fresh assignments instead of caching grants', async () => {
+    allowedLookup.mockResolvedValueOnce([]).mockResolvedValueOnce(['profile']);
+    expect(await service.validate(query)).toEqual({
+      ok: false,
+      error: 'invalid_scope',
+    });
     const result = await service.validate({
-      ...input,
-      scope: 'custom.scope OpenID custom.scope',
+      ...query,
+      scope: 'profile',
+      nonce: undefined,
     });
     expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.request.scope).toEqual([
-        'custom.scope',
-        'OpenID',
-        'custom.scope',
-      ]);
-      expect(Object.keys(result).sort()).toEqual(['client', 'ok', 'request']);
-    }
+    if (result.ok) expect(result.grantedScopes).toEqual(['profile']);
+    expect(allowedLookup).toHaveBeenCalledTimes(2);
   });
+  it.each([
+    { state: undefined },
+    { response_type: 'token' },
+    { redirect_uri: 'https://unregistered.example.invalid' },
+    { code_challenge: undefined },
+    { code_challenge: 'x' },
+    { code_challenge_method: 'plain' },
+    { nonce: undefined },
+  ])(
+    'never reads allowed scopes before earlier validation succeeds (%#)',
+    async (variation) => {
+      allowedLookup.mockRejectedValue(new Error('Must not read scopes.'));
+      const result = await service.validate({ ...query, ...variation });
+      expect(result.ok).toBe(false);
+      expect(allowedLookup).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['Client unavailable.', 'Client lookup failed.'])(
+    'does not read scopes after client lookup rejection (%#)',
+    async (message) => {
+      lookup.mockRejectedValue(new Error(message));
+      try {
+        await service.validate(query);
+      } catch {
+        /* fixed operational failure */
+      }
+      expect(allowedLookup).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['async', 'sync'])(
+    'sanitizes %s scope lookup failures as server failures, not invalid_scope',
+    async (mode) => {
+      const privateError = new Error(
+        `Scope lookup failed. private SQL ${client.id} ${query.state}`,
+        { cause: new Error('private driver detail') },
+      );
+      if (mode === 'async') allowedLookup.mockRejectedValue(privateError);
+      else
+        allowedLookup.mockImplementation(() => {
+          throw privateError;
+        });
+      let rejected = false;
+      try {
+        await service.validate(query);
+      } catch (error) {
+        rejected = true;
+        expect(error instanceof Error).toBe(true);
+        if (!(error instanceof Error)) expect.fail('Expected safe Error.');
+        expect(error.message).toBe('Authorization request failed.');
+        expect(error.cause).toBeUndefined();
+        expect(Object.keys(error)).toEqual([]);
+        for (const value of [
+          client.id,
+          query.state,
+          'Scope lookup failed.',
+          'private SQL',
+          'private driver detail',
+        ])
+          expect((error.message + (error.stack ?? '')).includes(value)).toBe(
+            false,
+          );
+      }
+      expect(rejected).toBe(true);
+    },
+  );
   it('rejects malformed shapes before client resolution', async () => {
     expect(
       await service.validate({ ...query, redirect_uri: ['opaque-uri'] }),

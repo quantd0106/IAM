@@ -572,7 +572,7 @@ Acceptance criteria:
 
 ## M5.3 — Granted-scope calculation
 
-Status: [ ]
+Status: [x]
 
 Rule:
 

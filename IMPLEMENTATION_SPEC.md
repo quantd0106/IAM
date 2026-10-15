@@ -235,7 +235,7 @@ non-global OAuthModule importing ClientRegistryModule. Successful validation is
 temporarily HTTP 204 with no body; M5.4-M5.6 will replace this with the actual
 session/authorization flow. M5.1 never emits Location or Set-Cookie and sets
 Cache-Control: no-store. No session/login/consent, code/token issuance, Redis
-state, granted scopes or persistence writes are performed.
+state or persistence writes are performed; M5.3 adds transient granted scopes only.
 
 One Zod boundary accepts framework-decoded scalar strings only. Base fields
 response_type, client_id, redirect_uri, scope and state are required/non-empty;
@@ -248,7 +248,8 @@ URL decoding/re-encoding occurs. Only response_type=code is supported.
 Scope uses RFC 6749 section 3.3 syntax: non-empty ASCII scope tokens separated
 by one SP, with no leading/trailing/repeated spaces, tabs, quotes, backslashes
 or control characters. Preserve token order, duplicates and exact case/content;
-do not query ScopeLookupService or calculate allowed/granted scope sets. Exact
+parsing does not apply client-specific membership. M5.3 validates that membership
+after client/redirect/PKCE checks as defined in section 18. Exact
 openid requires a non-empty opaque nonce. State is always opaque/non-empty;
 neither state nor nonce is generated, persisted, logged or echoed.
 
@@ -265,7 +266,7 @@ No query values, internal UUID, private cause or driver detail are returned/logg
 
 M5.2 finalizes the authorization-request PKCE policy in section 6 below, replacing
 M5.1's minimum presence/method checks without changing the interim HTTP behavior.
-M5.3 still owns allowed/granted scopes and invalid_scope.
+M5.3 enforces allowed/granted scopes and invalid_scope as defined in section 18.
 
 Authorization code policy:
 
@@ -989,6 +990,29 @@ requested_scopes ∩ client_allowed_scopes
 ```
 
 If request includes an unknown or forbidden scope, return `invalid_scope`.
+
+M5.3 runtime order is parse -> response_type -> enabled client -> exact redirect
+-> PKCE -> ScopeLookupService.getAllowedScopeNames(client.id) -> granted-scope
+policy. The lookup receives internal Client.id, never OAuth client_id; its exact
+names come only from existing ClientScope -> Scope assignments. No lookup occurs
+when an earlier validation fails. No duplicate repository, cache, defaults,
+scope aliases, normalization or permission mapping is introduced.
+
+Every requested token must be in the allowed set. Reject the entire request on
+any miss; never silently drop forbidden scopes. The pure policy returns the exact
+intersection with first-request occurrence order and duplicate grant names removed,
+without mutating either input. request.scope retains all parsed requested tokens;
+the successful internal result exposes a separate grantedScopes array. It is
+transient only, not persisted or returned through HTTP. No authorization-code,
+session or token state is added; HTTP success remains interim empty 204.
+
+Policy rejection returns direct HTTP 400
+`{error: "invalid_scope", error_description: "Invalid authorization request."}`.
+Lookup operational failure is not invalid_scope: return the existing safe HTTP
+500 server_error with description `Authorization request failed.`. No offending scope,
+allowed list, UUID, query or private driver cause is echoed/logged. All responses
+retain no-store and no Location/Set-Cookie. Exact requested openid still requires
+nonce at the unchanged parser boundary; OpenID is a distinct scope, not an alias.
 
 OIDC scopes:
 

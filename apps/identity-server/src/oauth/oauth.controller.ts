@@ -44,7 +44,7 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    // Interim M5.1 success only: discard validated transient data. No redirect,
-    // cookie, session, authorization code, granted scopes or token response.
+    // Interim validation-only success: discard transient request/grantedScopes.
+    // No redirect, cookie, session, authorization code or token response.
   }
 }

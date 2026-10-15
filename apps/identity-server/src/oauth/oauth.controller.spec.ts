@@ -76,6 +76,12 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
         input: Prisma.ClientFindUniqueArgs,
       ) => Promise<(typeof rows)[number] | null>
     >();
+  const findAllowed =
+    vi.fn<
+      (
+        input: Prisma.ClientScopeFindManyArgs,
+      ) => Promise<{ scope: { name: string } }[]>
+    >();
   const unexpected = vi.fn(() => {
     throw new Error('Unexpected business-data side effect.');
   });
@@ -89,6 +95,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     deleteMany: unexpected,
   };
   let clients: typeof rows;
+  let allowedNames: Map<string, string[]>;
   let app: INestApplication<Server>;
   let logs: MockInstance[];
   beforeAll(async () => {
@@ -96,7 +103,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       .overrideProvider(PrismaService)
       .useValue({
         client: { findUnique, findFirst: unexpected, ...mutations },
-        clientScope: { findMany: unexpected, ...mutations },
+        clientScope: { findMany: findAllowed, ...mutations },
         scope: { findMany: unexpected, ...mutations },
         user: { findUnique: unexpected, ...mutations },
         credential: mutations,
@@ -106,8 +113,6 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
         $executeRaw: unexpected,
         $executeRawUnsafe: unexpected,
       })
-      .overrideProvider(ScopeLookupService)
-      .useValue({ getAllowedScopeNames: unexpected })
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
       .compile();
@@ -119,6 +124,27 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     clients = structuredClone(rows);
+    allowedNames = new Map(
+      rows.map((row) => [
+        row.id,
+        [
+          'openid',
+          'profile',
+          'email',
+          ...(row.clientId === 'banking-web'
+            ? ['banking.transactions.read']
+            : []),
+        ],
+      ]),
+    );
+    findAllowed.mockImplementation((input) => {
+      const id = input.where?.clientId;
+      if (typeof id !== 'string')
+        throw new Error('Expected internal client identifier.');
+      return Promise.resolve(
+        (allowedNames.get(id) ?? []).map((name) => ({ scope: { name } })),
+      );
+    });
     findUnique.mockImplementation((input) =>
       Promise.resolve(
         clients.find((row) => row.clientId === input.where.clientId) ?? null,
@@ -166,6 +192,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       valid.nonce,
       valid.code_challenge,
       valid.redirect_uri,
+      valid.scope,
       'private driver cause',
     ])
       expect(response.text.includes(value)).toBe(false);
@@ -186,6 +213,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     ).not.toBe(true);
     expect(Object.keys(app.get(AuthorizationRequestService))).toEqual([
       'clients',
+      'scopes',
     ]);
   });
   it('returns interim empty 204 for Student SPA S256, never a code/token/redirect/cookie', async () => {
@@ -193,6 +221,10 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     expect(findUnique).toHaveBeenCalledOnce();
     expect(findUnique.mock.calls[0][0].where).toEqual({
       clientId: 'student-spa',
+    });
+    expect(findAllowed).toHaveBeenCalledExactlyOnceWith({
+      where: { clientId: rows[0].id },
+      select: { scope: { select: { name: true } } },
     });
   });
   it.each(['banking-web', 'admin-portal'])(
@@ -303,12 +335,116 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       expect(findUnique).not.toHaveBeenCalled();
     },
   );
-  it('requires nonce only for exact openid and does not consult allowed scopes', async () => {
+  it('requires nonce for exact requested openid before scope lookup; other case tokens are not aliases', async () => {
     await call({ ...valid, nonce: undefined }, 400);
+    expect(findAllowed).not.toHaveBeenCalled();
     await call(
       { ...valid, nonce: undefined, scope: 'custom.scope OpenID' },
-      204,
+      400,
+      { ...badRequest, error: 'invalid_scope' },
     );
+    await call({ ...valid, nonce: undefined, scope: 'profile' }, 204);
+    allowedNames.get(rows[0].id)?.push('OpenID');
+    await call({ ...valid, nonce: undefined, scope: 'OpenID' }, 204);
+  });
+  it.each([
+    ['student-spa', 'openid banking.transactions.read'],
+    ['student-spa', 'openid definitely.unknown'],
+    ['student-spa', 'OpenID'],
+    ['banking-web', 'BANKING.TRANSACTIONS.READ'],
+    ['admin-portal', 'openid banking.transactions.read'],
+    ['admin-portal', 'banking.transactions.read'],
+  ])(
+    'returns fixed invalid_scope for %s unassigned request (%#)',
+    async (id, scope) => {
+      const client = clients.find((row) => row.clientId === id);
+      if (!client) throw new Error('Missing fixture.');
+      await call(
+        {
+          ...valid,
+          client_id: id,
+          redirect_uri: client.redirectUris[0].redirectUri,
+          scope,
+        },
+        400,
+        { ...badRequest, error: 'invalid_scope' },
+      );
+      expect(findAllowed.mock.calls[0][0].where).toEqual({
+        clientId: client.id,
+      });
+    },
+  );
+  it.each([
+    ['student-spa', 'profile'],
+    ['student-spa', 'openid profile openid email profile'],
+    ['banking-web', 'openid banking.transactions.read'],
+    ['banking-web', 'banking.transactions.read'],
+    ['admin-portal', 'email profile'],
+  ])(
+    'retains interim empty 204 for %s valid subset/duplicates (%#)',
+    async (id, scope) => {
+      const client = clients.find((row) => row.clientId === id);
+      if (!client) throw new Error('Missing fixture.');
+      await call(
+        {
+          ...valid,
+          client_id: id,
+          redirect_uri: client.redirectUris[0].redirectUri,
+          scope,
+        },
+        204,
+      );
+    },
+  );
+  it('does not fall back to default OIDC scopes when no assignments exist', async () => {
+    allowedNames.set(rows[0].id, []);
+    await call(valid, 400, { ...badRequest, error: 'invalid_scope' });
+  });
+  it.each([
+    { response_type: undefined },
+    { response_type: 'token' },
+    { client_id: 'unknown-client' },
+    { redirect_uri: 'https://unregistered.example.invalid' },
+    { code_challenge: 'x' },
+    { code_challenge_method: 'plain' },
+  ])(
+    'skips all scope queries when an earlier check fails (%#)',
+    async (variation) => {
+      await call({ ...valid, ...variation, scope: 'definitely.unknown' }, 400, {
+        ...badRequest,
+        error:
+          variation.response_type === 'token'
+            ? 'unsupported_response_type'
+            : 'invalid_request',
+      });
+      expect(findAllowed).not.toHaveBeenCalled();
+    },
+  );
+  it('does not query scopes for a disabled client', async () => {
+    clients[0].enabled = false;
+    await call(valid, 400);
+    expect(findAllowed).not.toHaveBeenCalled();
+  });
+  it('maps scope-read infrastructure failure to server_error, never invalid_scope', async () => {
+    findAllowed.mockRejectedValueOnce(
+      new Error('private driver cause SQL scope client UUID'),
+    );
+    await call(valid, 500, {
+      error: 'server_error',
+      error_description: 'Authorization request failed.',
+    });
+  });
+  it('sanitizes unexpected scope lookup exceptions without query or internal identifier leakage', async () => {
+    vi.spyOn(
+      app.get(ScopeLookupService),
+      'getAllowedScopeNames',
+    ).mockRejectedValueOnce(
+      new Error(`${rows[0].id} ${JSON.stringify(valid)}`),
+    );
+    await call(valid, 500, {
+      error: 'server_error',
+      error_description: 'Authorization request failed.',
+    });
   });
   it.each([
     { code_challenge: undefined, code_challenge_method: undefined },

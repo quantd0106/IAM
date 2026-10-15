@@ -11,6 +11,7 @@ import { createClient, RESP_TYPES } from 'redis';
 import { PrismaClient, type Prisma } from '../src/generated/prisma/client.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { OAuthModule } from '../src/oauth/oauth.module.js';
+import { AuthorizationRequestService } from '../src/oauth/authorization-request.service.js';
 
 const demos = [
   { clientId: 'student-spa', redirectUri: 'http://localhost:3200/callback' },
@@ -37,6 +38,7 @@ const invalid = {
   error: 'invalid_request',
   error_description: 'Invalid authorization request.',
 };
+const invalidScope = { ...invalid, error: 'invalid_scope' };
 let verifiedHttpCases = 0;
 type Snapshot = { relation: string; count: number; fingerprint: string }[];
 const snapshot = (
@@ -144,8 +146,13 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
     ]),
     400,
   );
-  // M5.3 has not begun: syntax-valid unregistered scopes are not granted/rejected here.
-  await checkHttp(origin, { ...student, scope: 'custom.scope OpenID' }, 204);
+  // M5.3 supersedes syntax-only acceptance of unassigned scope tokens.
+  await checkHttp(
+    origin,
+    { ...student, scope: 'custom.scope OpenID' },
+    400,
+    invalidScope,
+  );
   await checkHttp(origin, { ...student, response_type: 'token' }, 400, {
     ...invalid,
     error: 'unsupported_response_type',
@@ -189,6 +196,32 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
       `${'A'.repeat(40)}%2D`,
     ])
       await checkHttp(origin, { ...query, code_challenge }, 400);
+  }
+
+  // Canonical ClientScope assignments; no fixture/seed changes are needed.
+  for (const [clientId, scope, status] of [
+    ['student-spa', 'openid banking.transactions.read', 400],
+    ['student-spa', 'openid definitely.unknown', 400],
+    ['student-spa', 'OpenID', 400],
+    ['student-spa', 'profile openid profile email openid', 204],
+    ['student-spa', 'profile', 204],
+    ['banking-web', 'openid banking.transactions.read', 204],
+    ['banking-web', 'BANKING.TRANSACTIONS.READ', 400],
+    ['admin-portal', 'openid banking.transactions.read', 400],
+  ] as const) {
+    const demo = demos.find((item) => item.clientId === clientId);
+    assert.ok(demo);
+    await checkHttp(
+      origin,
+      {
+        ...student,
+        client_id: clientId,
+        redirect_uri: demo.redirectUri,
+        scope,
+      },
+      status,
+      invalidScope,
+    );
   }
 }
 
@@ -274,6 +307,18 @@ async function checkAuthorizationRequests(): Promise<void> {
       await app.listen(0, '127.0.0.1');
       capturedLogs = 0;
       await verify(await app.getUrl());
+      const grant = await app
+        .get(AuthorizationRequestService)
+        .validate({ ...student, scope: 'profile openid profile email openid' });
+      assert.ok(grant.ok);
+      assert.deepEqual(grant.request.scope, [
+        'profile',
+        'openid',
+        'profile',
+        'email',
+        'openid',
+      ]);
+      assert.deepEqual(grant.grantedScopes, ['profile', 'openid', 'email']);
       assert.equal(capturedLogs, 0);
     } finally {
       await app.close();
@@ -360,10 +405,10 @@ async function checkAuthorizationRequests(): Promise<void> {
       'Read-only transaction/zero-write counters/disabled fixture rollback/full-row fingerprints passed; canonical registry and all domain/migration rows unchanged.',
     );
     console.log(
-      'Rebuilt application HTTP and /health passed; temporary HTTP servers closed; no session, code, token or grant behavior added.',
+      'Rebuilt application HTTP and /health passed; temporary HTTP servers closed; grants remain transient, no session/code/token or persistence behavior added.',
     );
     console.log(
-      `M5.1/M5.2 passed ${verifiedHttpCases} real HTTP authorization cases; PUBLIC/CONFIDENTIAL complete/partial S256 and challenge format enforced; Redis key/value snapshot unchanged.`,
+      `M5.1-M5.3 passed ${verifiedHttpCases} real HTTP authorization cases; exact allowed scopes/invalid_scope and transient ordered deduplicated grants verified; PKCE preserved; Redis key/value snapshot unchanged.`,
     );
   } finally {
     Object.assign(console, originals);

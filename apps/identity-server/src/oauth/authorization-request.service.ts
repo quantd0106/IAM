@@ -8,20 +8,28 @@ import {
   type AuthorizationRequest,
 } from './authorization-request.schema.js';
 import { validateAuthorizationPkce } from './authorization-pkce.policy.js';
+import { ScopeLookupService } from '../client-registry/scope-lookup.service.js';
+import { calculateGrantedScopes } from './authorization-scope.policy.js';
 
 export type AuthorizationRequestResult =
   | {
       ok: true;
       client: EnabledClient;
       request: AuthorizationRequest & { response_type: 'code' };
+      grantedScopes: string[];
     }
-  | { ok: false; error: 'invalid_request' | 'unsupported_response_type' };
+  | {
+      ok: false;
+      error: 'invalid_request' | 'unsupported_response_type' | 'invalid_scope';
+    };
 
 @Injectable()
 export class AuthorizationRequestService {
   constructor(
     @Inject(ClientLookupService)
     private readonly clients: Pick<ClientLookupService, 'requireEnabledClient'>,
+    @Inject(ScopeLookupService)
+    private readonly scopes: Pick<ScopeLookupService, 'getAllowedScopeNames'>,
   ) {}
 
   async validate(query: unknown): Promise<AuthorizationRequestResult> {
@@ -52,6 +60,20 @@ export class AuthorizationRequestService {
       )
     )
       return { ok: false, error: 'invalid_request' };
-    return { ok: true, client, request: { ...request, response_type: 'code' } };
+    let allowedScopes: string[];
+    try {
+      allowedScopes = await this.scopes.getAllowedScopeNames(client.id);
+    } catch {
+      // A failed registry read is not a forbidden-scope policy decision.
+      throw new Error('Authorization request failed.');
+    }
+    const grant = calculateGrantedScopes(request.scope, allowedScopes);
+    if (!grant.ok) return { ok: false, error: 'invalid_scope' };
+    return {
+      ok: true,
+      client,
+      request: { ...request, response_type: 'code' },
+      grantedScopes: grant.grantedScopes,
+    };
   }
 }
