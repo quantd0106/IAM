@@ -242,6 +242,33 @@ Client secret:
 
 Public clients never receive or send a client secret.
 
+M4.4 adds only the internal `ClientSecretService.issueSecret(clientRecordId)`
+capability, exported by ClientRegistryModule (PrismaModule only, no controller
+or AuthModule dependency). The caller must authorize the action beforehand;
+clientRecordId is internal Client.id, validated as the existing UUID format.
+Unknown/PUBLIC clients are rejected before randomness or hashing. CONFIDENTIAL
+clients may begin with a NULL hash; the same method issues first or rotates an
+existing secret without introducing an enabled/disabled authentication policy.
+
+Generate `randomBytes(32).toString('base64url')`: 32 bytes / 256 bits of random
+input entropy, no prefix or normalization. Hash directly with the installed
+Argon2 library using Argon2id and its default costs/fresh salt. Only the encoded
+hash is written to the existing nullable Client.clientSecretHash field; no
+schema change, separate salt or other secret field exists.
+
+Use one compare-and-swap update matching internal id, CONFIDENTIAL type and the
+previously read hash (including NULL), requiring count = 1. A stale concurrent
+candidate fails without automatic retry. Return only `{clientSecret}` after
+persistence succeeds; plaintext is transient, never persisted, cached or logged,
+and cannot be recovered later. A subsequent successful issuance replaces the
+hash, not a retained old-secret history. Invalid input, unknown/PUBLIC client,
+crypto/read/write failure and CAS loss expose only `Client secret issuance failed.`
+without sensitive values or attached causes.
+
+No HTTP management API, secret retrieval API or client-secret verification is
+added. M4.5 will use this lifecycle for demo confidential clients; M6.4 owns
+`client_secret_basic` authentication. Runtime lookup remains M4.6.
+
 ---
 
 ## 8. JWT Signing

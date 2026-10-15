@@ -498,7 +498,7 @@ Acceptance criteria:
 
 ## M4.4 — Client secret lifecycle
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
