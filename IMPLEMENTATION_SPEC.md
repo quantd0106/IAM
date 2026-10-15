@@ -230,13 +230,15 @@ code_challenge   # required for public client
 code_challenge_method=S256
 ```
 
-M5.1-M5.5 expose GET /oauth/authorize through a non-global OAuthModule importing
+M5.1-M5.6 expose GET /oauth/authorize through a non-global OAuthModule importing
 ClientRegistryModule, SessionAuthenticationModule and RedisModule. M5.1-M5.3 validate
 the OAuth request before M5.4 authenticates the existing central IdP session, then
-M5.5 issues/stores a code. Success is temporarily HTTP 204 with no body until M5.6
-adds the callback response. All responses set Cache-Control: no-store and never
-emit Location or Set-Cookie. No consent, token issuance, request-continuation state
-or PostgreSQL writes are added; the raw code and authenticated subject remain internal.
+M5.5 issues/stores a code. M5.6 changes only the final success response to HTTP 302
+Found with Location and an empty body. All responses set Cache-Control: no-store;
+none emit Set-Cookie. Errors remain direct fixed 400/401/500 without Location.
+No consent, token issuance, request-continuation state or PostgreSQL writes are
+added; authenticated subject remains internal, while the raw code is returned only
+in the validated success callback.
 
 M5.4 order: parse -> response_type -> enabled client -> exact redirect -> PKCE
 -> allowed-scope lookup -> granted-scope policy -> central-session authentication.
@@ -263,11 +265,12 @@ are unchanged. Missing state is never recreated and there is no store fallback.
 There is no IdP HTML login UI yet. The M5.4 login/resume contract is: valid
 authorize without a session -> 401 -> existing POST /auth/login -> iam.sid ->
 resubmit the SAME original authorize request with that cookie -> authenticated
-204 continuation. No redirect to a new login route, return_to cookie, stored
+continuation (the M5.6 success callback now replaces the staged 204). No redirect
+to a new login route, return_to cookie, stored
 request, Redis continuation key or new database object is introduced. Internal
 continuation exposes only trusted sessionId/userId/authTime/mfaLevel alongside
 validated OAuth data; M5.5 adds a transient authorizationCode only after persistence.
-None is returned in the HTTP response; M5.6 remains separate.
+The subject is never returned; M5.6 uses only the code and validated redirect/state.
 
 One Zod boundary accepts framework-decoded scalar strings only. Base fields
 response_type, client_id, redirect_uri, scope and state are required/non-empty;
@@ -283,7 +286,8 @@ or control characters. Preserve token order, duplicates and exact case/content;
 parsing does not apply client-specific membership. M5.3 validates that membership
 after client/redirect/PKCE checks as defined in section 18. Exact
 openid requires a non-empty opaque nonce. State is always opaque/non-empty;
-neither is generated, logged or echoed. OAuth state is never persisted; M5.5
+neither is generated or logged. M5.6 returns state unchanged only in the success
+callback; nonce is never echoed. OAuth state is never persisted; M5.5
 stores the supplied nonce only in the canonical authorization-code context below.
 
 Resolve only through ClientLookupService.requireEnabledClient. Compare the
@@ -295,7 +299,7 @@ Other shape/nonce/PKCE failures use that same response. A well-shaped
 unsupported response_type receives HTTP 400 unsupported_response_type with the
 same description. Lookup operational/unexpected failures receive fixed HTTP 500
 `{error: "server_error", error_description: "Authorization request failed."}`.
-No query values, internal UUID, private cause or driver detail are returned/logged.
+Errors never return/log query values, internal UUID, private cause or driver detail.
 
 M5.2 finalizes the authorization-request PKCE policy in section 6 below, replacing
 M5.1's minimum presence/method checks without changing the interim HTTP behavior.
@@ -351,9 +355,27 @@ have occurred when code persistence fails; there is no cross-store transaction.
 A lost Redis reply may leave only a hash-keyed TTL-bounded entry, never a success
 response or raw code disclosure.
 
+M5.6 uses only successful AuthorizationResult.request.redirect_uri/state and its
+already-issued authorizationCode. A small pure textual builder preserves the exact
+validated URI spelling/case/percent encoding/query ordering, without URL parsing or
+reserialization. Append encodeURIComponent(code) and encodeURIComponent(state) as
+code/state query parameters, using ? without an existing query and & with one
+(no extra separator after a trailing ? or &). Insert before the first literal #,
+preserving the fragment unchanged. No new registration/matching policy is added.
+
+OAuthController sets Location through the existing HTTP adapter/passthrough pattern
+and returns void with HTTP 302, avoiding redirect-helper HTML/code duplication.
+Never reconstruct from raw query/body/headers, look up the client again, reissue a
+code, or read/write/touch/delete code state to construct a response. No Location,
+code/state echo or Set-Cookie on errors; invalid redirect URIs never redirect.
+Response-construction failures use the same sanitized server_error boundary. A
+lost/failed HTTP delivery may leave the existing TTL-bounded entry; no rollback or
+network transaction is attempted. A request retry goes through normal validation
+and new issuance, not code reuse. Location/raw code/state are never logged.
+
 Token endpoint must atomically consume authorization-code state to prevent replay.
 Consumption/GETDEL/redemption/verifier handling belong to M6 and are not implemented
-by M5.5; returning code/state in a validated callback belongs only to M5.6.
+by M5.5/M5.6; only the authorization success callback is implemented by M5.6.
 
 ---
 
@@ -1067,14 +1089,15 @@ without mutating either input. request.scope retains all parsed requested tokens
 the successful internal result exposes a separate grantedScopes array. It is
 transient in M5.3, never returned through HTTP. M5.5 persists that exact result in
 authorization-code state after session authentication; no session or token state
-is added by the scope policy. HTTP success remains interim empty 204 until M5.6.
+is added by the scope policy. HTTP success uses the M5.6 callback only after session
+authentication and successful M5.5 code persistence.
 
 Policy rejection returns direct HTTP 400
 `{error: "invalid_scope", error_description: "Invalid authorization request."}`.
 Lookup operational failure is not invalid_scope: return the existing safe HTTP
 500 server_error with description `Authorization request failed.`. No offending scope,
 allowed list, UUID, query or private driver cause is echoed/logged. All responses
-retain no-store and no Location/Set-Cookie. Exact requested openid still requires
+retain no-store and no Location/Set-Cookie on these errors. Exact requested openid still requires
 nonce at the unchanged parser boundary; OpenID is a distinct scope, not an alias.
 
 OIDC scopes:

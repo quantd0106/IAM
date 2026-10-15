@@ -613,7 +613,7 @@ Acceptance criteria:
 
 ## M5.6 — Authorization response
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

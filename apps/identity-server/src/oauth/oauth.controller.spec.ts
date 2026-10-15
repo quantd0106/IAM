@@ -9,6 +9,8 @@ import { SessionAuthenticationModule } from '../session/session-authentication.m
 import { AuthorizationService } from './authorization.service.js';
 import { AuthorizationCodeService } from './authorization-code.service.js';
 import { RedisModule } from '../redis/redis.module.js';
+import { HttpAdapterHost } from '@nestjs/core';
+import { createHash } from 'node:crypto';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import {
@@ -130,6 +132,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   let persistent: ReturnType<typeof currentRow>;
   let logs: MockInstance[];
   let codeWriteFailure = false;
+  let issuedCodes: string[];
   beforeAll(async () => {
     const module = await Test.createTestingModule({ imports: [OAuthModule] })
       .overrideProvider(PrismaService)
@@ -148,7 +151,16 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
       .overrideProvider(RedisService)
-      .useValue({ setIfAbsentWithTtl: reserve })
+      .useValue({
+        setIfAbsentWithTtl: reserve,
+        get: unexpected,
+        delete: unexpected,
+        getAndDelete: unexpected,
+        setWithTtl: unexpected,
+        ttl: unexpected,
+        set: unexpected,
+        sessionState: unexpected,
+      })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch })
       .useMocker((token) =>
@@ -169,6 +181,14 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     vi.resetAllMocks();
     reserve.mockResolvedValue(true);
     codeWriteFailure = false;
+    issuedCodes = [];
+    const codes = app.get(AuthorizationCodeService);
+    const issue = codes.issue.bind(codes);
+    vi.spyOn(codes, 'issue').mockImplementation(async (input) => {
+      const result = await issue(input);
+      issuedCodes.push(result.code);
+      return result;
+    });
     clients = structuredClone(rows);
     persistent = currentRow();
     findSession.mockImplementation(() => Promise.resolve(persistent));
@@ -253,12 +273,33 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       expect(reserve.mock.calls.length).toBe(reservationsBefore);
     if (status === 500 && !codeWriteFailure)
       expect(reserve.mock.calls.length).toBe(reservationsBefore);
-    if (status === 204)
+    if (status === 302)
       expect(reserve.mock.calls.length).toBe(reservationsBefore + 1);
-    expect(response.headers.location).toBeUndefined();
+    if (status === 302) {
+      const location: unknown = response.headers.location;
+      expect(typeof location === 'string').toBe(true);
+      const callback = new URL(location as string);
+      const code = callback.searchParams.get('code');
+      expect(code !== null && code === issuedCodes.at(-1)).toBe(true);
+      expect(callback.searchParams.getAll('code').length).toBe(1);
+      expect(callback.searchParams.getAll('state').length).toBe(1);
+      expect(callback.searchParams.get('state') === query.state).toBe(true);
+      expect(
+        (location as string).startsWith(
+          (query.redirect_uri as string).split('#')[0],
+        ),
+      ).toBe(true);
+      const [key, value] = reserve.mock.calls.at(-1)!;
+      expect(
+        key ===
+          'oauth:code:' + createHash('sha256').update(code!).digest('hex'),
+      ).toBe(true);
+      expect(value.includes(code!)).toBe(false);
+      expect(response.text).toBe('');
+    } else expect(response.headers.location).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
     expect(response.headers['cache-control']).toBe('no-store');
-    if (status === 204) expect(response.text).toBe('');
+    if (status === 302) expect(response.text).toBe('');
     else expect(response.body as unknown).toEqual(body ?? badRequest);
     for (const value of [
       valid.state,
@@ -295,8 +336,8 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       'scopes',
     ]);
   });
-  it('persists exactly one code after authentication but returns empty 204, never code/token/redirect/cookie', async () => {
-    await call(valid, 204);
+  it('persists exactly one code after authentication and returns that code only via validated Location with empty 302 body', async () => {
+    await call(valid, 302);
     expect(findUnique).toHaveBeenCalledOnce();
     expect(findUnique.mock.calls[0][0].where).toEqual({
       clientId: 'student-spa',
@@ -335,7 +376,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
           code_challenge: undefined,
           code_challenge_method: undefined,
         },
-        204,
+        302,
       );
     },
   );
@@ -397,7 +438,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   it('uses exactly one framework decoding step, not URL re-encoding/canonicalization', async () => {
     const registered = 'http://localhost:3200/call%62ack?b=2&a=1';
     clients[0].redirectUris = [{ redirectUri: registered }];
-    await call({ ...valid, redirect_uri: registered }, 204);
+    await call({ ...valid, redirect_uri: registered }, 302);
     await call(
       { ...valid, redirect_uri: 'http://localhost:3200/callback?b=2&a=1' },
       400,
@@ -406,6 +447,104 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       { ...valid, redirect_uri: 'http://localhost:3200/call%62ack?a=1&b=2' },
       400,
     );
+  });
+  it.each([
+    ' &+=?/#%\r\n',
+    ' Tiếng Việt / 漢字 / 🙂 ',
+    'e\u0301',
+    '\u00e9',
+    '%252F+%20',
+  ])(
+    'round-trips the original reserved/Unicode state through HTTP without body/cookie/log disclosure (case %#)',
+    async (state) => {
+      await call({ ...valid, state }, 302);
+    },
+  );
+  it.each([
+    'HTTP://LOCALHOST:3200/call%62ack?tenant=a&mode=b',
+    'http://localhost:3200/call%62ack?b=%2f&a=hello+world#opaque%2F?x=1#tail',
+    'http://localhost:3200/callback#fragment?x=1',
+    'http://localhost:3200/callback?',
+    'http://localhost:3200/callback?tenant=a&',
+  ])(
+    'preserves exact registered URI text/query ordering/fragment without full-URL serialization (case %#)',
+    async (redirect_uri) => {
+      clients[0].redirectUris = [{ redirectUri: redirect_uri }];
+      const response = await call({ ...valid, redirect_uri }, 302);
+      const split = redirect_uri.indexOf('#');
+      const base = split < 0 ? redirect_uri : redirect_uri.slice(0, split);
+      const fragment = split < 0 ? '' : redirect_uri.slice(split);
+      const separator = base.includes('?')
+        ? base.endsWith('?') || base.endsWith('&')
+          ? ''
+          : '&'
+        : '?';
+      expect(
+        response.headers.location ===
+          `${base}${separator}code=${encodeURIComponent(issuedCodes.at(-1)!)}&state=${encodeURIComponent(valid.state)}${fragment}`,
+      ).toBe(true);
+      expect(findUnique).toHaveBeenCalledOnce();
+      expect(reserve).toHaveBeenCalledOnce();
+    },
+  );
+  it('takes redirect/state/code only from the successful result, not raw query or headers; never looks up or issues twice', async () => {
+    const validated = await app
+      .get(AuthorizationRequestService)
+      .validate(valid);
+    if (!validated.ok) throw new Error('Invalid fixture.');
+    const redirectUri =
+      'http://localhost:3200/call%62ack?tenant=a&mode=b#opaque';
+    const code = 'already-issued?&=+/# é';
+    const state = 'original state?&=+/# Tiếng Việt';
+    vi.spyOn(app.get(AuthorizationService), 'authorize').mockResolvedValueOnce({
+      ...validated,
+      request: { ...validated.request, redirect_uri: redirectUri, state },
+      session: {
+        sessionId: currentId,
+        userId: currentUser,
+        authTime: 1,
+        mfaLevel: 'password',
+      },
+      authorizationCode: code,
+    });
+    const response = await request(app.getHttpServer())
+      .get('/oauth/authorize')
+      .query({
+        ...valid,
+        redirect_uri: 'https://attacker.invalid/callback',
+        state: 'attacker-state',
+      })
+      .set('Origin', 'https://attacker.invalid')
+      .set('Referer', 'https://attacker.invalid/')
+      .set('Host', 'attacker.invalid')
+      .expect(302);
+    expect(
+      response.headers.location ===
+        `http://localhost:3200/call%62ack?tenant=a&mode=b&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}#opaque`,
+    ).toBe(true);
+    expect(response.text).toBe('');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(findUnique).toHaveBeenCalledOnce();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(issuedCodes.length).toBe(0);
+  });
+  it('sanitizes response-construction failure without rolling back/reissuing/reading the persisted code', async () => {
+    const adapter = app.get(HttpAdapterHost).httpAdapter;
+    const setHeader = adapter.setHeader.bind(adapter);
+    vi.spyOn(adapter, 'setHeader').mockImplementation(
+      (response: unknown, name: string, value: string) => {
+        if (name === 'Location') throw new Error('private callback ' + value);
+        setHeader(response, name, value);
+      },
+    );
+    codeWriteFailure = true;
+    await call(valid, 500, {
+      error: 'server_error',
+      error_description: 'Authorization request failed.',
+    });
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(issuedCodes.length).toBe(1);
   });
   it.each([
     'response_type',
@@ -438,9 +577,9 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       400,
       { ...badRequest, error: 'invalid_scope' },
     );
-    await call({ ...valid, nonce: undefined, scope: 'profile' }, 204);
+    await call({ ...valid, nonce: undefined, scope: 'profile' }, 302);
     allowedNames.get(rows[0].id)?.push('OpenID');
-    await call({ ...valid, nonce: undefined, scope: 'OpenID' }, 204);
+    await call({ ...valid, nonce: undefined, scope: 'OpenID' }, 302);
   });
   it.each([
     ['student-spa', 'openid banking.transactions.read'],
@@ -476,7 +615,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     ['banking-web', 'banking.transactions.read'],
     ['admin-portal', 'email profile'],
   ])(
-    'retains interim empty 204 for %s valid subset/duplicates (%#)',
+    'returns a validated 302 callback for %s valid subset/duplicates (%#)',
     async (id, scope) => {
       const client = clients.find((row) => row.clientId === id);
       if (!client) throw new Error('Missing fixture.');
@@ -487,7 +626,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
           redirect_uri: client.redirectUris[0].redirectUri,
           scope,
         },
-        204,
+        302,
       );
     },
   );
@@ -567,7 +706,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
         client_id: id,
         redirect_uri: client.redirectUris[0].redirectUri,
       };
-      await call(query, 204);
+      await call(query, 302);
       await call({ ...query, code_challenge: undefined }, 400);
       await call({ ...query, code_challenge_method: undefined }, 400);
       await call({ ...query, code_challenge_method: 'plain' }, 400);
@@ -720,7 +859,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       error: 'invalid_scope',
     });
     expect(touch).not.toHaveBeenCalled();
-    await call(valid, 204);
+    await call(valid, 302);
     expect(touch).toHaveBeenCalledExactlyOnceWith(currentId);
     expect(findAllowed.mock.invocationCallOrder[1]).toBeLessThan(
       touch.mock.invocationCallOrder[0],

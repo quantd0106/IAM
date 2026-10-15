@@ -72,6 +72,7 @@ let verifyCodeWrite:
       query: Record<string, string> | URLSearchParams,
       status: number,
       cookie?: string,
+      code?: string,
     ) => Promise<void>)
   | undefined;
 type Snapshot = { relation: string; count: number; fingerprint: string }[];
@@ -121,7 +122,7 @@ async function checkHttp(
   status: number,
   body = invalid,
   cookie?: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const url = new URL('/oauth/authorize', origin);
   url.search = new URLSearchParams(query).toString();
   const response = await fetch(url, {
@@ -130,33 +131,61 @@ async function checkHttp(
     signal: AbortSignal.timeout(5000),
   });
   assert.equal(response.status, status);
-  assert.equal(response.headers.get('location'), null);
   assert.equal(response.headers.get('set-cookie'), null);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  if (status === 204) assert.equal(await response.text(), '');
-  else
+  let returnedCode: string | undefined;
+  if (status === 302) {
+    assert.equal(await response.text(), '');
+    const location = response.headers.get('location');
+    assert.ok(location !== null);
+    const parameters = new URLSearchParams(query);
+    const redirectUri = parameters.get('redirect_uri')!;
+    const state = parameters.get('state')!;
+    const callback = new URL(location);
+    const code = callback.searchParams.get('code');
+    assert.ok(code !== null && /^[A-Za-z0-9_-]{43}$/.test(code));
+    assert.equal(callback.searchParams.getAll('code').length, 1);
+    assert.equal(callback.searchParams.getAll('state').length, 1);
+    assert.ok(callback.searchParams.get('state') === state);
+    const hashAt = redirectUri.indexOf('#');
+    const base = hashAt < 0 ? redirectUri : redirectUri.slice(0, hashAt);
+    const fragment = hashAt < 0 ? '' : redirectUri.slice(hashAt);
+    const separator = base.includes('?')
+      ? base.endsWith('?') || base.endsWith('&')
+        ? ''
+        : '&'
+      : '?';
+    assert.ok(
+      location ===
+        `${base}${separator}code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}${fragment}`,
+    );
+    returnedCode = code;
+  } else {
+    assert.equal(response.headers.get('location'), null);
     assert.deepEqual(
       await response.json(),
       status === 401 ? unauthenticated : body,
     );
+  }
   verifiedHttpCases++;
-  await verifyCodeWrite?.(origin, query, status, cookie);
+  await verifyCodeWrite?.(origin, query, status, cookie, returnedCode);
+  return returnedCode;
 }
 async function checkCanonicalHttp(
   origin: string,
   cookie?: string,
 ): Promise<void> {
-  // M5.4: formerly valid 204 requests require authentication first. All earlier
-  // 400 contracts stay unchanged, with or without a browser cookie.
+  // M5.4 requires authentication; M5.6 changes authenticated success to 302 only.
+  // All earlier 400 contracts stay unchanged, with or without a browser cookie.
   const check = (
     query: Record<string, string> | URLSearchParams,
     status: number,
     body = invalid,
-  ): Promise<void> =>
+  ): Promise<string | undefined> =>
     checkHttp(
       origin,
       query,
-      status === 204 && cookie === undefined ? 401 : status,
+      status === 302 && cookie === undefined ? 401 : status,
       body,
       cookie,
     );
@@ -170,7 +199,7 @@ async function checkCanonicalHttp(
       delete query.code_challenge;
       delete query.code_challenge_method;
     }
-    await check(query, 204);
+    await check(query, 302);
   }
   await check({ ...student, client_id: `m5.1-unknown-${randomUUID()}` }, 400);
   for (const redirect_uri of [
@@ -213,7 +242,7 @@ async function checkCanonicalHttp(
       client_id: demo.clientId,
       redirect_uri: demo.redirectUri,
     };
-    await check(query, 204);
+    await check(query, 302);
     const challengeOnly = { ...query };
     delete challengeOnly.code_challenge_method;
     await check(challengeOnly, 400);
@@ -251,9 +280,9 @@ async function checkCanonicalHttp(
     ['student-spa', 'openid banking.transactions.read', 400],
     ['student-spa', 'openid definitely.unknown', 400],
     ['student-spa', 'OpenID', 400],
-    ['student-spa', 'profile openid profile email openid', 204],
-    ['student-spa', 'profile', 204],
-    ['banking-web', 'openid banking.transactions.read', 204],
+    ['student-spa', 'profile openid profile email openid', 302],
+    ['student-spa', 'profile', 302],
+    ['banking-web', 'openid banking.transactions.read', 302],
     ['banking-web', 'BANKING.TRANSACTIONS.READ', 400],
     ['admin-portal', 'openid banking.transactions.read', 400],
   ] as const) {
@@ -385,7 +414,7 @@ async function checkAuthorizationRequests(): Promise<void> {
   };
   const checkSessionFlow = async (): Promise<void> => {
     const userId = randomUUID();
-    const marker = `m5.5-${randomUUID()}`;
+    const marker = `m5.6-${randomUUID()}`;
     const email = `${marker}@example.invalid`;
     const password = `temporary-${randomUUID()}`;
     const ids = new Set<string>();
@@ -397,9 +426,13 @@ async function checkAuthorizationRequests(): Promise<void> {
     let touches = 0;
     let persistentReads = 0;
     let createdUser = false;
+    const callbackClientId = randomUUID();
+    const callbackClientName = `${marker}-callbacks`;
+    let createdClient = false;
     const codeKeys = new Set<string>();
     const collisionEntries = new Map<string, string>();
     const attempts: string[] = [];
+    const reserved = new Map<string, { value: string; ttl: number }>();
     const issued: {
       code: string;
       input: AuthorizationCodeInput;
@@ -444,7 +477,13 @@ async function checkAuthorizationRequests(): Promise<void> {
                 const stored = await (
                   codeFault ? unavailableRedis! : liveRedis
                 ).setIfAbsentWithTtl(codeKey, serialized, ttl);
-                if (stored) codeKeys.add(codeKey);
+                if (stored) {
+                  codeKeys.add(codeKey);
+                  reserved.set(codeKey, {
+                    value: serialized,
+                    ttl: await redis.pTTL(codeKey),
+                  });
+                }
                 if (collisionEntries.has(codeKey)) {
                   assert.ok(
                     (await redis.get(codeKey)) ===
@@ -512,21 +551,29 @@ async function checkAuthorizationRequests(): Promise<void> {
       let checkedIssues = 0;
       let checkedAttempts = 0;
       let checkedKeys = 0;
-      verifyCodeWrite = async (targetOrigin, query, status, cookieHeader) => {
+      verifyCodeWrite = async (
+        targetOrigin,
+        query,
+        status,
+        cookieHeader,
+        returnedCode,
+      ) => {
         if (targetOrigin !== temporaryOrigin) return;
-        assert.equal(issued.length, checkedIssues + (status === 204 ? 1 : 0));
-        if (status !== 204 && !codeFault && !reservationFailure)
+        assert.equal(issued.length, checkedIssues + (status === 302 ? 1 : 0));
+        if (status !== 302 && !codeFault && !reservationFailure)
           assert.equal(attempts.length, checkedAttempts);
-        if (status === 204) {
+        if (status === 302) {
           const latest = issued.at(-1)!;
+          assert.ok(returnedCode !== undefined && returnedCode === latest.code);
           const codeKey = buildRedisKey(
             'oauth:code',
-            createHash('sha256').update(latest.code).digest('hex'),
+            createHash('sha256').update(returnedCode).digest('hex'),
           );
           assert.ok(codeKeys.has(codeKey));
           assert.ok(!codeKey.includes(latest.code));
           const value = await redis.get(codeKey);
           assert.ok(value !== null && !value.includes(latest.code));
+          assert.ok(value === reserved.get(codeKey)?.value);
           const stored = authorizationCodeStateSchema.parse(JSON.parse(value));
           const parameters = new URLSearchParams(query);
           const id = cookies.parse(cookieHeader);
@@ -559,6 +606,7 @@ async function checkAuthorizationRequests(): Promise<void> {
           );
           const ttl = await redis.pTTL(codeKey);
           assert.ok(ttl > 0 && ttl <= AUTHORIZATION_CODE_TTL_SECONDS * 1000);
+          assert.ok(ttl <= reserved.get(codeKey)!.ttl);
           // Each no-collision success reserves exactly one remembered key.
           assert.equal(attempts.length, checkedAttempts + expectedAttempts);
           assert.equal(codeKeys.size, checkedKeys + expectedAttempts);
@@ -636,7 +684,13 @@ async function checkAuthorizationRequests(): Promise<void> {
           targetOrigin === origin
             ? new Set((await redisSnapshot()).map(([redisKey]) => redisKey))
             : undefined;
-        await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+        const returnedCode = await checkHttp(
+          targetOrigin,
+          student,
+          302,
+          invalid,
+          cookie(id),
+        );
         if (keysBeforeCompose) {
           // Compose is a black box: bounded local observer only; delete only state
           // belonging to this absent-before-run fixture UUID, never arbitrary keys.
@@ -645,11 +699,20 @@ async function checkAuthorizationRequests(): Promise<void> {
             .filter((redisKey) => !keysBeforeCompose.has(redisKey));
           assert.equal(created.length, 1);
           const codeKey = created[0];
+          assert.ok(returnedCode !== undefined);
+          assert.ok(
+            codeKey ===
+              buildRedisKey(
+                'oauth:code',
+                createHash('sha256').update(returnedCode).digest('hex'),
+              ),
+          );
           assert.ok(/^oauth:code:[0-9a-f]{64}$/.test(codeKey));
           const stored = authorizationCodeStateSchema.parse(
             JSON.parse((await redis.get(codeKey))!),
           );
           assert.equal(stored.userId, userId);
+          assert.ok(!(await redis.get(codeKey))!.includes(returnedCode));
           codeKeys.add(codeKey);
           checkedKeys = codeKeys.size;
           assert.equal(stored.clientId, student.client_id);
@@ -679,7 +742,7 @@ async function checkAuthorizationRequests(): Promise<void> {
         if (targetOrigin === temporaryOrigin) {
           await setTimeout(1100);
           const idleBefore = await redis.pTTL(key(id));
-          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          await checkHttp(targetOrigin, student, 302, invalid, cookie(id));
           const idleAfter = await redis.pTTL(key(id));
           assert.ok(idleAfter > idleBefore + 500 && idleAfter <= 5000);
           const after = await runtime.read(id);
@@ -695,6 +758,49 @@ async function checkAuthorizationRequests(): Promise<void> {
           );
           // Existing M5.1-M5.3 matrix now also runs with a genuine central session.
           await checkCanonicalHttp(targetOrigin, cookie(id));
+          // New exact registrations belong only to this probe, not the demo seed.
+          const registeredCallbacks = [
+            'http://localhost:3100/m56-call%62ack?tenant=a&mode=b',
+            'HTTP://LOCALHOST:3100/m56-call%62ack?b=%2f&a=hello+world#opaque%2F?x=1#tail',
+            'http://localhost:3100/m56-callback#opaque?x=1',
+          ];
+          assert.equal(
+            await prisma.client.count({ where: { id: callbackClientId } }),
+            0,
+          );
+          createdClient = true;
+          const profile = await prisma.scope.findUniqueOrThrow({
+            where: { name: 'profile' },
+            select: { id: true },
+          });
+          await prisma.client.create({
+            data: {
+              id: callbackClientId,
+              clientId: callbackClientName,
+              name: callbackClientName,
+              clientType: 'CONFIDENTIAL',
+              redirectUris: {
+                create: registeredCallbacks.map((redirectUri) => ({
+                  redirectUri,
+                })),
+              },
+              allowedScopes: { create: { scopeId: profile.id } },
+            },
+          });
+          for (const redirectUri of registeredCallbacks)
+            await checkHttp(
+              targetOrigin,
+              {
+                response_type: 'code',
+                client_id: callbackClientName,
+                redirect_uri: redirectUri,
+                scope: 'profile',
+                state: ' M5.6 Tiếng Việt / 漢字 / 🙂 &+=?/#%\r\n e\u0301 ',
+              },
+              302,
+              invalid,
+              cookie(id),
+            );
           await checkHttp(
             targetOrigin,
             {
@@ -704,7 +810,7 @@ async function checkAuthorizationRequests(): Promise<void> {
               scope: 'profile',
               state: student.state,
             },
-            204,
+            302,
             invalid,
             cookie(id),
           );
@@ -752,16 +858,16 @@ async function checkAuthorizationRequests(): Promise<void> {
             cookie(id),
           );
           prismaFault = false;
-          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          await checkHttp(targetOrigin, student, 302, invalid, cookie(id));
           const firstCode = issued.at(-1)!.code;
-          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          await checkHttp(targetOrigin, student, 302, invalid, cookie(id));
           assert.ok(firstCode !== issued.at(-1)!.code);
           // Occupy the first random candidate at the storage seam, then use
           // the real NX primitive. The collided value must remain untouched.
           collisionsRemaining = 1;
           expectedAttempts = 2;
           const attemptsBeforeCollision = attempts.length;
-          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          await checkHttp(targetOrigin, student, 302, invalid, cookie(id));
           assert.equal(attempts.length, attemptsBeforeCollision + 2);
           assert.ok(attempts.at(-1) !== attempts.at(-2));
           expectedAttempts = 1;
@@ -813,7 +919,7 @@ async function checkAuthorizationRequests(): Promise<void> {
           assert.equal(attempts.length, failedAttempt + 1);
           assert.equal(await redis.get(attempts.at(-1)!), null);
           codeFault = false;
-          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          await checkHttp(targetOrigin, student, 302, invalid, cookie(id));
         }
         const logout = await fetch(new URL('/auth/logout', targetOrigin), {
           method: 'POST',
@@ -922,7 +1028,7 @@ async function checkAuthorizationRequests(): Promise<void> {
       await checkHttp(
         temporaryOrigin,
         student,
-        204,
+        302,
         invalid,
         cookie(boundedId),
       );
@@ -988,6 +1094,22 @@ async function checkAuthorizationRequests(): Promise<void> {
           await redis.del(rateKey);
           assert.equal(await redis.get(rateKey), null);
           await prisma.$transaction([
+            ...(createdClient
+              ? [
+                  prisma.clientScope.deleteMany({
+                    where: { clientId: callbackClientId },
+                  }),
+                  prisma.clientRedirectUri.deleteMany({
+                    where: { clientId: callbackClientId },
+                  }),
+                  prisma.client.deleteMany({
+                    where: {
+                      id: callbackClientId,
+                      clientId: callbackClientName,
+                    },
+                  }),
+                ]
+              : []),
             prisma.session.deleteMany({ where: { userId } }),
             prisma.credential.deleteMany({ where: { userId } }),
             prisma.user.deleteMany({
@@ -997,6 +1119,22 @@ async function checkAuthorizationRequests(): Promise<void> {
           assert.equal(await prisma.user.count({ where: { id: userId } }), 0);
           assert.equal(await prisma.session.count({ where: { userId } }), 0);
           assert.equal(await prisma.credential.count({ where: { userId } }), 0);
+          assert.equal(
+            await prisma.client.count({ where: { id: callbackClientId } }),
+            0,
+          );
+          assert.equal(
+            await prisma.clientRedirectUri.count({
+              where: { clientId: callbackClientId },
+            }),
+            0,
+          );
+          assert.equal(
+            await prisma.clientScope.count({
+              where: { clientId: callbackClientId },
+            }),
+            0,
+          );
         }
       }
     }
@@ -1043,13 +1181,13 @@ async function checkAuthorizationRequests(): Promise<void> {
           });
           const state = await snapshot(tx);
           const activity = await writes(tx);
-          await withHttp(tx, (testOrigin) =>
-            checkHttp(
+          await withHttp(tx, async (testOrigin) => {
+            await checkHttp(
               testOrigin,
               { ...student, client_id: marker, redirect_uri: redirectUri },
               400,
-            ),
-          );
+            );
+          });
           assert.deepEqual(await writes(tx), activity);
           assert.ok(
             JSON.stringify(await snapshot(tx)) === JSON.stringify(state),
@@ -1077,16 +1215,16 @@ async function checkAuthorizationRequests(): Promise<void> {
     assert.deepEqual(await redisSnapshot(), redisBefore);
     Object.assign(console, originals);
     console.log(
-      'M5.1-M5.5 real PostgreSQL/Redis/HTTP passed: OAuth validation and session authentication precede code issuance; fixed 400/401/500, authenticated 204, no code body, Location or new Set-Cookie.',
+      'M5.1-M5.6 real PostgreSQL/Redis/HTTP passed: unchanged validation/session/code pipeline, authenticated empty-body 302 callback with original state and exactly the issued code; errors keep fixed 400/401/500 without Location or Set-Cookie.',
     );
     console.log(
-      'Read-only validation/counters/disabled fixture rollback passed; authorization performs no PostgreSQL writes; login/session fixtures cleaned; full-row fingerprints and canonical registry unchanged.',
+      'Read-only validation/counters/disabled fixture rollback passed; authorization performs no PostgreSQL writes; owned login/session/callback-registry fixtures cleaned; full-row fingerprints and canonical registry unchanged.',
     );
     console.log(
       'Real login -> cookie -> same authorization request -> logout passed on temporary and Compose apps; Redis idle touch/absolute cap, coherence and controlled Redis/Prisma faults passed; temporary server/clients closed.',
     );
     console.log(
-      `M5.1-M5.5 passed ${verifiedHttpCases} real HTTP authorization cases; exact hash-only code state/120-second TTL/independent codes/NX collision retry and exhaustion/disconnected code Redis failure passed; all probe-owned code keys cleaned; no token/redirect/consume; Redis snapshot restored unchanged.`,
+      `M5.1-M5.6 passed ${verifiedHttpCases} real HTTP authorization cases; returned-code SHA-256/eight-field state/unchanged 120-second TTL/exact query-fragment and Unicode-state preservation/independent codes/NX collision retry and exhaustion/disconnected code Redis failure passed; all probe-owned code keys cleaned; no token/consume; Redis snapshot restored unchanged.`,
     );
   } finally {
     Object.assign(console, originals);

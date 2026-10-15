@@ -727,19 +727,20 @@ Probe gọi service nội bộ với PostgreSQL/Redis thật, kiểm tra isolati
 failure/retry, concurrency, snapshot và HTTP admin paths vẫn 404; chỉ cleanup data
 của probe và đóng clients, không tạo admin endpoint/server.
 
-## 28. Interim authorization-request validation
+## 28. Authorization endpoint
 
 `GET /oauth/authorize` hiện validate request rồi gate bằng central IdP session
-(M5.1-M5.5), sau đó generate/store code nội bộ; chưa trả code/token/callback. OAuth request lỗi vẫn trả 400 trước
+(M5.1-M5.6), sau đó generate/store code và trả callback 302; chưa issue token. OAuth request lỗi vẫn trả 400 trước
 mọi session touch. Request OAuth hợp lệ nhưng chưa xác thực trả chung 401
 `Authentication required.`. Cookie configured -> Redis touch -> matching ACTIVE,
 unexpired/coherent PostgreSQL Session là authority; không dùng query/Bearer hay
 một store riêng lẻ. Lỗi hạ tầng trả safe 500, không bị hiểu thành logged out.
-Session hợp lệ tiếp tục với 204 rỗng, không Location, Set-Cookie hoặc subject data.
+Session hợp lệ và code đã persist trả 302 Found, Location chứa đúng code M5.5 đã
+issue và state gốc, body rỗng, không Set-Cookie hoặc subject data.
 Idle activity/TTL có thể advance theo M3, không đổi absolute expiry hay PostgreSQL.
 Chưa có login UI/return_to/continuation state: gọi existing POST /auth/login rồi
 gửi lại ĐÚNG authorize request ban đầu với iam.sid để resume. Logout/revocation
-ngăn cookie đó tiếp tục authorize. M5.6 vẫn chưa triển khai.
+ngăn cookie đó tiếp tục authorize. M6 token endpoint/consume vẫn chưa triển khai.
 Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
 ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
 exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
@@ -752,8 +753,15 @@ hash/verify `code_verifier`; việc đó thuộc M6.3.
 
 Lỗi validation trả trực tiếp HTTP 400 JSON OAuth với description cố định, không
 echo query values hoặc redirect tới URI do caller cung cấp. Lỗi nội bộ trả 500 an
-toàn. Chi tiết contract nằm trong implementation spec; chỉ M5.6 mới thay 204 tạm
-thời bằng callback redirect. Không có token hoặc session mechanism mới.
+toàn. Mọi lỗi 400/401/500 vẫn không Location hoặc code/state echo, kể cả invalid
+redirect. Không có OAuth error redirects, token hoặc session mechanism mới.
+
+M5.6 chỉ dùng redirect_uri/state đã validate và raw code đã issue từ internal
+AuthorizationResult, không đọc lại raw query/header hay lookup registry lần nữa.
+Callback builder giữ nguyên URI text/query ordering/percent encoding, chỉ append
+query-component encoded code/state (trước fragment nếu có). Không serialize lại
+toàn bộ URL. Không ghi/read/touch/delete code Redis để dựng callback, không phát
+code thứ hai hay log Location. Delivery lỗi không rollback code; entry tự expire.
 
 M5.5 dùng random 256-bit (`randomBytes(32)`, base64url không padding), SHA-256 raw
 code thành lowercase hex và reserve `oauth:code:{codeHash}` bằng SET EX 120 NX.
@@ -762,7 +770,8 @@ authTime/expiresAt; protocol clientId và exact validated values được giữ 
 userId/authTime lấy từ central session, PKCE/nonce vắng mặt hợp lệ dùng null.
 Expiry = một issue instant + 120000 ms; TTL cố định 120 giây. Collision không ghi đè,
 retry fresh code tối đa 3 lần, lỗi trả cùng safe 500. Raw code chỉ transient nội bộ,
-không nằm trong Redis/log/error/HTTP. Chưa có consume/GETDEL, verifier hay token endpoint.
+không nằm trong Redis/log/error/HTTP body; M5.6 chỉ đưa raw code vào validated
+Location. Chưa có consume/GETDEL, verifier hay token endpoint.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
 Probe kiểm tra M5.1-M5.3 regressions trước session, login -> cookie -> same request
@@ -770,5 +779,7 @@ resume trên PostgreSQL/Redis/HTTP thật, idle/absolute/coherence/logout và co
 infrastructure failures. Authorize không write PostgreSQL; login dùng fixture
 User/Credential/Session riêng có cleanup. Probe kiểm tra real hash-only code state,
 TTL, hai code độc lập, collision/retry/exhaustion và disconnected code Redis failure;
+M5.6 đối chiếu code từ Location với Redis hash/state/TTL, exact registered query/
+fragment và reserved/Unicode state bằng registry fixture riêng, không sửa demo seed;
 chỉ xóa code/session keys thuộc probe. Disabled fixture rollback; snapshot DB/Redis
 được khôi phục sau probe, giữ nguyên seed và đóng servers/clients tạm.
