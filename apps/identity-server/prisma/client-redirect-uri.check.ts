@@ -123,13 +123,8 @@ async function checkClientRedirectUris(): Promise<void> {
           'CREATE UNIQUE INDEX client_redirect_uris_client_id_redirect_uri_key ON public.client_redirect_uris USING btree (client_id, redirect_uri)',
       ),
     );
-    const scopeTables = await prisma.$queryRaw<{ name: string }[]>`
-      SELECT table_name::text AS name FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name IN ('scopes', 'client_scopes', 'Scope', 'ClientScope')
-    `;
-    assert.deepEqual(scopeTables, []);
     console.log(
-      'Redirect URI exact columns/types/NOT NULL/UUID PK/FK to internal Client.id/composite unique/no CHECK or Scope tables passed.',
+      'Redirect URI exact columns/types/NOT NULL/UUID PK/FK to internal Client.id/composite unique/no CHECK policies passed.',
     );
 
     before = await snapshot();

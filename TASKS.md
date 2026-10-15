@@ -489,7 +489,7 @@ Acceptance criteria:
 
 ## M4.3 — Scope + ClientScope models
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

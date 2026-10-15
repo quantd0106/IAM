@@ -77,7 +77,8 @@ model Client {
   accessTokenTtl   Int        @default(600) @map("access_token_ttl")
   refreshTokenTtl  Int        @default(2592000) @map("refresh_token_ttl")
 
-  redirectUris ClientRedirectUri[]
+  redirectUris  ClientRedirectUri[]
+  allowedScopes ClientScope[]
 
   @@map("clients")
 }
@@ -91,4 +92,24 @@ model ClientRedirectUri {
 
   @@unique([clientId, redirectUri])
   @@map("client_redirect_uris")
+}
+
+model Scope {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+
+  clientScopes ClientScope[]
+
+  @@map("scopes")
+}
+
+model ClientScope {
+  clientId String @map("client_id") @db.Uuid
+  scopeId  String @map("scope_id") @db.Uuid
+
+  client Client @relation(fields: [clientId], references: [id])
+  scope  Scope  @relation(fields: [scopeId], references: [id])
+
+  @@id([clientId, scopeId])
+  @@map("client_scopes")
 }

@@ -816,6 +816,21 @@ max attempts: 5
 
 ## 18. OAuth Scope Model
 
+M4.3 persistence baseline: `Scope` maps to `scopes`, containing only a
+Prisma-generated UUID `id` and globally unique exact text `name`, without
+trimming, casefolding, Unicode normalization or new scope-name CHECK policies.
+Explicit `ClientScope` maps to `client_scopes`: required UUID `client_id` and
+`scope_id` reference internal `Client.id` and `Scope.id`, not protocol strings.
+The pair `(client_id, scope_id)` is the composite primary key; no surrogate ID
+or extra metadata is added. Both FKs use Prisma's default ON DELETE RESTRICT /
+ON UPDATE CASCADE behavior.
+
+`Client.allowedScopes` and `Scope.clientScopes` expose the explicit assignments:
+one Client may allow zero/one/many scopes, and one Scope may belong to
+zero/one/many Clients. M4.3 seeds no canonical scopes or demo assignments and
+adds no runtime scope parser, policy or endpoint. M4.5 owns seed data, M4.6 owns
+lookup, and M5.3 owns requested/allowed intersection and `invalid_scope` behavior.
+
 Client registration defines `allowed_scopes`.
 
 Authorization request defines `requested_scopes`.
