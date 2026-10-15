@@ -614,6 +614,38 @@ self-revoked cookie receives 401. No OAuth tokens, IP/device capture redesign,
 audit infrastructure or admin authority are added. M3.7 alone owns privileged
 target-user revocation.
 
+M3.7 adds only the injectable internal AdminSessionRevocationService, exported
+through AuthModule for trusted internal consumers. Its API is
+`revokeUserSessions(targetUserId: string): Promise<void>`. The caller must FIRST
+authorize this action through a future trusted management/RBAC layer; the target
+UUID is not proof of privilege. This service performs no administrator
+authentication/authorization, accepts no actor/role/privilege flag or secret,
+and has no HTTP route or cookie semantics. No temporary privilege mechanism,
+Role/Permission model, OAuth token behavior or persistent audit infrastructure
+is introduced; M3.6 ownership enforcement remains unchanged.
+
+Validate the target with the existing canonical UUID domain before touching
+stores, without trimming/normalization. Discover only PostgreSQL Session IDs with
+`where: {userId: targetUserId, status: 'ACTIVE'}`, `select: {id: true}` and
+`orderBy: {id: 'asc'}`. PostgreSQL is the persistent session registry; Redis is
+never scanned or pre-read for discovery. Unknown users and zero ACTIVE sessions
+are the same idempotent success, without a separate User lookup. REVOKED history
+is not enumerated or deleted. ACTIVE records with missing/expired runtime are
+still passed directly to the existing logout primitive.
+
+Sequentially await IdpLogoutService.logout for each discovered ID, preserving
+Redis-first invalidation, conditional persistent REVOKED, DEL=0/update count=0
+idempotency and unchanged timestamps/metadata. Revocation covers only this
+discovery snapshot; it does not disable/lock an account, change its Credential or
+prevent new login sessions after discovery. There is no cross-store/multi-session
+transaction or distributed compensation. On the first failure, stop subsequent
+work and reject only `Admin session revocation failed.` without identifiers,
+URLs, driver causes or sensitive logs. Earlier completed revokes remain complete;
+partially deleted runtime is never restored. Retry performs a fresh ACTIVE
+discovery: fully REVOKED rows disappear, Redis-deleted/DB-ACTIVE rows and untouched
+rows are retried safely through M3.5 idempotency. Concurrent user logout or
+privileged invocations do not recreate runtime state or persistent rows.
+
 ---
 
 ## 15. SSO

@@ -20,6 +20,7 @@
     "login:check": "node --env-file-if-exists=.env dist/auth/login.check.js",
     "logout:check": "node --env-file-if-exists=.env dist/auth/logout.check.js",
     "own-sessions:check": "node --env-file-if-exists=.env dist/auth/own-sessions.check.js",
+    "admin-sessions:check": "node --env-file-if-exists=.env dist/auth/admin-session-revocation.check.js",
     "test": "vitest run"
   },
   "dependencies": {

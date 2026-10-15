@@ -697,3 +697,21 @@ Không có admin authority, OAuth/token, global auth guard hay persistent audit 
 Sau build/Compose startup chạy `pnpm --filter identity-server own-sessions:check`.
 Probe kiểm tra list/TTL, own revoke, cross-user IDOR, self/concurrent revoke,
 Redis outage/reconnect và chỉ cleanup dữ liệu/clients/server/proxy tạm của probe.
+
+## 27. Internal target-user session revocation
+
+`AdminSessionRevocationService.revokeUserSessions(targetUserId)` là capability
+nội bộ, chỉ được gọi sau khi future trusted management/RBAC layer đã authorize
+action. Service không tự xác thực/cấp quyền admin, không có public HTTP endpoint,
+admin header/secret hay Role/Permission model. Own-session API giữ nguyên ownership.
+
+Validate UUID rồi query PostgreSQL ACTIVE session IDs của target theo id ASC,
+không scan/pre-read Redis. Reuse logout service tuần tự; unknown/zero-session
+target thành công idempotent. Chỉ revoke snapshot đã discover, không disable
+account hoặc ngăn login mới. Lỗi dừng xử lý, giữ các revoke đã hoàn tất; không
+khôi phục Redis. Retry discover lại ACTIVE rows và hoàn tất phần còn lại/partial.
+
+Sau build/Compose startup, chạy `pnpm --filter identity-server admin-sessions:check`.
+Probe gọi service nội bộ với PostgreSQL/Redis thật, kiểm tra isolation, partial
+failure/retry, concurrency, snapshot và HTTP admin paths vẫn 404; chỉ cleanup data
+của probe và đóng clients, không tạo admin endpoint/server.

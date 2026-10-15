@@ -448,7 +448,7 @@ Functions:
 
 ## M3.7 — Admin session revocation service
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

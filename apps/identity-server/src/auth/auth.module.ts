@@ -5,6 +5,7 @@ import { PasswordService } from '../security/password/password.service.js';
 import { AuthController } from './auth.controller.js';
 import { AuthSessionsController } from './auth-sessions.controller.js';
 import { IdpOwnSessionService } from './idp-own-session.service.js';
+import { AdminSessionRevocationService } from './admin-session-revocation.service.js';
 import { RegistrationService } from './registration.service.js';
 import { RegisterValidationFilter } from './register-validation.filter.js';
 import { LoginValidationService } from './login-validation.service.js';
@@ -31,6 +32,7 @@ import {
     IdpLoginService,
     IdpLogoutService,
     IdpOwnSessionService,
+    AdminSessionRevocationService,
     PasswordChangeService,
     PasswordResetRequestService,
     PasswordResetConsumeService,
@@ -38,5 +40,7 @@ import {
     PasswordService,
     { provide: APP_FILTER, useClass: RegisterValidationFilter },
   ],
+  // Internal DI capability, not HTTP access or an authorization decision.
+  exports: [AdminSessionRevocationService],
 })
 export class AuthModule {}
