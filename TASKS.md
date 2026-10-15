@@ -462,7 +462,7 @@ Depends on: M1.4
 
 ## M4.1 — Client Prisma model
 
-Status: [ ]
+Status: [x]
 
 Fields:
 

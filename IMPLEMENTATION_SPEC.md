@@ -64,6 +64,21 @@ Production issuer must be HTTPS and environment-configurable.
 
 ## 3. Client Registry
 
+M4.1 persistence baseline: standalone `Client` maps to `clients`, with a
+Prisma-generated internal UUID `id` (not the OAuth identifier), exact unique text
+`client_id`, required text `name`, and required explicit `client_type` enum
+`PUBLIC` / `CONFIDENTIAL` without a default. Strings are not normalized.
+`client_secret_hash` is nullable; public clients may have NULL, and M4.1 does not
+require a secret hash for confidential clients. `enabled` defaults to true.
+`access_token_ttl` and `refresh_token_ttl` are integer seconds, defaulting to 600
+and 2592000 respectively; explicit values persist unchanged. No other columns,
+relations or custom CHECK policies are added.
+
+M4.1 creates no client secret or OAuth endpoint. Secret lifecycle belongs to
+M4.4, redirect URIs to M4.2, scopes to M4.3, demo clients to M4.5, and
+lookup/disabled-client rejection logic to M4.6. The client classes below describe
+those future registrations, not seed data introduced by M4.1.
+
 ### Student SPA
 
 ```text
