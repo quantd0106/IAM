@@ -662,8 +662,8 @@ state creation thành công.
 
 Lỗi xác thực dùng chung 401, body/JSON sai dùng 400, lỗi nội bộ dùng 500; không phát
 cookie khi lỗi. Incoming cookie không được tái sử dụng làm ID mới. Không trả OAuth
-tokens hay tự authenticate/touch cookie trên các request khác.
-Session-management routes bên dưới xác thực/touch cookie riêng trong phạm vi đó;
+tokens hay tạo global session middleware.
+Session-management và valid authorize xác thực/touch cookie riêng trong phạm vi đó;
 chưa có global session middleware.
 Sau build, chạy probe local explicit với PostgreSQL/Redis và Compose API đang up:
 `pnpm --filter identity-server login:check`. Probe dùng dữ liệu tạm và cleanup;
@@ -729,8 +729,17 @@ của probe và đóng clients, không tạo admin endpoint/server.
 
 ## 28. Interim authorization-request validation
 
-`GET /oauth/authorize` hiện chỉ parse/validate request (M5.1-M5.3), chưa thực hiện
-authorization flow. Request hợp lệ trả 204 không body, Location hoặc Set-Cookie.
+`GET /oauth/authorize` hiện validate request rồi gate bằng central IdP session
+(M5.1-M5.4), chưa tạo code/token/callback. OAuth request lỗi vẫn trả 400 trước
+mọi session touch. Request OAuth hợp lệ nhưng chưa xác thực trả chung 401
+`Authentication required.`. Cookie configured -> Redis touch -> matching ACTIVE,
+unexpired/coherent PostgreSQL Session là authority; không dùng query/Bearer hay
+một store riêng lẻ. Lỗi hạ tầng trả safe 500, không bị hiểu thành logged out.
+Session hợp lệ tiếp tục với 204 rỗng, không Location, Set-Cookie hoặc subject data.
+Idle activity/TTL có thể advance theo M3, không đổi absolute expiry hay PostgreSQL.
+Chưa có login UI/return_to/continuation state: gọi existing POST /auth/login rồi
+gửi lại ĐÚNG authorize request ban đầu với iam.sid để resume. Logout/revocation
+ngăn cookie đó tiếp tục authorize. M5.5/M5.6 vẫn chưa triển khai.
 Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
 ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
 exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
@@ -743,10 +752,12 @@ hash/verify `code_verifier`; việc đó thuộc M6.3.
 
 Lỗi validation trả trực tiếp HTTP 400 JSON OAuth với description cố định, không
 echo query values hoặc redirect tới URI do caller cung cấp. Lỗi nội bộ trả 500 an
-toàn. Chi tiết contract nằm trong implementation spec; M5.4-M5.6 sẽ thay behavior
+toàn. Chi tiết contract nằm trong implementation spec; M5.5-M5.6 sẽ thay behavior
 204 tạm thời bằng flow session/authorization. Không có code/token/session mới.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
-Probe kiểm tra PostgreSQL/HTTP thật, M5.1/M5.2 regressions và M5.3 scope policy, read-only
-counters và disabled fixture chỉ rollback; đối chiếu Redis key/value trước–sau,
-giữ nguyên canonical seed data và đóng HTTP servers/DB/Redis clients tạm.
+Probe kiểm tra M5.1-M5.3 regressions trước session, login -> cookie -> same request
+resume trên PostgreSQL/Redis/HTTP thật, idle/absolute/coherence/logout và controlled
+infrastructure failures. Authorize không write PostgreSQL; login dùng fixture
+User/Credential/Session riêng có cleanup. Disabled fixture rollback; snapshot DB/
+Redis được khôi phục sau probe, giữ nguyên seed và đóng servers/clients tạm.

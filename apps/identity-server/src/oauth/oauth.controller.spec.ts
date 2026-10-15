@@ -1,5 +1,12 @@
 import { Logger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import type { Environment } from '../config/env.schema.js';
+import { RedisService } from '../redis/redis.service.js';
+import { IdpSessionStateService } from '../session/idp-session-state.service.js';
+import type { IdpSessionState } from '../session/idp-session-state.js';
+import { SessionAuthenticationModule } from '../session/session-authentication.module.js';
+import { AuthorizationService } from './authorization.service.js';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import {
@@ -36,6 +43,23 @@ const badRequest = {
   error: 'invalid_request',
   error_description: 'Invalid authorization request.',
 };
+const unauthenticated = {
+  statusCode: 401,
+  error: 'Unauthorized',
+  message: 'Authentication required.',
+};
+const currentId = '9d3d959a-c65b-4ffc-8086-ad563e59f198';
+const currentUser = 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f';
+const currentCookie = `iam.sid=${currentId}`;
+const currentRow = () => ({
+  id: currentId,
+  userId: currentUser,
+  status: 'ACTIVE' as 'ACTIVE' | 'REVOKED',
+  createdAt: new Date(Date.now() - 5000),
+  expiresAt: new Date(Date.now() + 60000),
+  ipAddress: null,
+  userAgent: null,
+});
 const rows = [
   {
     id: 'a82336c1-d281-48c6-981b-201b962cfa08',
@@ -97,6 +121,10 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   let clients: typeof rows;
   let allowedNames: Map<string, string[]>;
   let app: INestApplication<Server>;
+  const touch = vi.fn<IdpSessionStateService['touch']>();
+  const findSession =
+    vi.fn<() => Promise<ReturnType<typeof currentRow> | null>>();
+  let persistent: ReturnType<typeof currentRow>;
   let logs: MockInstance[];
   beforeAll(async () => {
     const module = await Test.createTestingModule({ imports: [OAuthModule] })
@@ -107,7 +135,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
         scope: { findMany: unexpected, ...mutations },
         user: { findUnique: unexpected, ...mutations },
         credential: mutations,
-        session: { findMany: unexpected, findFirst: unexpected, ...mutations },
+        session: { findMany: unexpected, findFirst: findSession, ...mutations },
         clientRedirectUri: mutations,
         $transaction: unexpected,
         $executeRaw: unexpected,
@@ -115,6 +143,18 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       })
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
+      .overrideProvider(RedisService)
+      .useValue({})
+      .overrideProvider(IdpSessionStateService)
+      .useValue({ touch })
+      .useMocker((token) =>
+        token === ConfigService
+          ? new ConfigService<Environment, true>({
+              COOKIE_NAME: 'iam.sid',
+              COOKIE_SECURE: false,
+            })
+          : undefined,
+      )
       .compile();
     app = module.createNestApplication<INestApplication<Server>>({
       logger: false,
@@ -124,6 +164,22 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     clients = structuredClone(rows);
+    persistent = currentRow();
+    findSession.mockImplementation(() => Promise.resolve(persistent));
+    touch.mockImplementation((id) =>
+      Promise.resolve(
+        id === currentId
+          ? {
+              userId: currentUser,
+              authTime: persistent.createdAt.getTime(),
+              mfaLevel: 'password',
+              createdAt: persistent.createdAt.getTime(),
+              lastActivityAt: Date.now(),
+              absoluteExpiresAt: persistent.expiresAt.getTime(),
+            }
+          : null,
+      ),
+    );
     allowedNames = new Map(
       rows.map((row) => [
         row.id,
@@ -177,11 +233,15 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     query: Record<string, unknown>,
     status: number,
     body?: unknown,
+    cookie: string | undefined = currentCookie,
   ) {
-    const response = await request(app.getHttpServer())
+    const touchesBefore = touch.mock.calls.length;
+    const operation = request(app.getHttpServer())
       .get('/oauth/authorize')
-      .query(query)
-      .expect(status);
+      .query(query);
+    if (cookie !== undefined) operation.set('Cookie', cookie);
+    const response = await operation.expect(status);
+    if (status === 400) expect(touch.mock.calls.length).toBe(touchesBefore);
     expect(response.headers.location).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
     expect(response.headers['cache-control']).toBe('no-store');
@@ -193,20 +253,24 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       valid.code_challenge,
       valid.redirect_uri,
       valid.scope,
+      currentId,
+      currentUser,
       'private driver cause',
     ])
       expect(response.text.includes(value)).toBe(false);
     return response;
   }
-  it('uses a non-global OAuth module with only ClientRegistryModule, one controller/service and no session/Redis dependencies', () => {
+  it('uses a non-global OAuth module with the shared central-session capability, not AuthModule or new session semantics', () => {
     expect(Reflect.getMetadata('imports', OAuthModule) as unknown).toEqual([
       ClientRegistryModule,
+      SessionAuthenticationModule,
     ]);
     expect(Reflect.getMetadata('controllers', OAuthModule) as unknown).toEqual([
       OAuthController,
     ]);
     expect(Reflect.getMetadata('providers', OAuthModule) as unknown).toEqual([
       AuthorizationRequestService,
+      AuthorizationService,
     ]);
     expect(
       Reflect.getMetadata('__module:global__', OAuthModule) as unknown,
@@ -525,7 +589,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
         await call({ ...query, code_challenge_method }, 400);
     },
   );
-  it('ignores unrelated query values, incoming cookies and Bearer headers without authenticating/touching sessions', async () => {
+  it('does not accept query subjects or Bearer/custom headers instead of a configured cookie', async () => {
     const response = await request(app.getHttpServer())
       .get('/oauth/authorize')
       .query({
@@ -535,10 +599,104 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       })
       .set('Cookie', 'iam.sid=not-a-session')
       .set('Authorization', 'Bearer not-a-token')
-      .expect(204);
-    expect(response.text).toBe('');
+      .set('X-Session-Id', currentId)
+      .expect(401);
+    expect(response.body as unknown).toEqual(unauthenticated);
+    expect(touch).not.toHaveBeenCalled();
     expect(response.headers.location).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
+  });
+  it.each([
+    '',
+    'unrelated=value',
+    'iam.sid=invalid',
+    `iam.sid=${currentId}; iam.sid=${currentId}`,
+  ])(
+    'returns indistinguishable 401 for missing/malformed/duplicate cookies (%#)',
+    async (cookie) => {
+      await call(valid, 401, unauthenticated, cookie);
+      expect(touch).not.toHaveBeenCalled();
+      expect(findSession).not.toHaveBeenCalled();
+    },
+  );
+  it('requires authentication when the configured cookie is entirely absent', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/oauth/authorize')
+      .query(valid)
+      .expect(401);
+    expect(response.body as unknown).toEqual(unauthenticated);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(touch).not.toHaveBeenCalled();
+  });
+  it('returns 401 for a UUID with missing/expired runtime, without persistent fallback', async () => {
+    touch.mockResolvedValue(null);
+    await call(valid, 401, unauthenticated);
+    expect(findSession).not.toHaveBeenCalled();
+  });
+  it.each([
+    'missing',
+    'revoked',
+    'expired',
+    'wrong user',
+    'wrong id',
+    'createdAt',
+    'absolute expiry',
+  ])(
+    'returns the same 401 for persistent session failure (%#)',
+    async (variation) => {
+      const state: IdpSessionState = {
+        userId: currentUser,
+        authTime: persistent.createdAt.getTime(),
+        mfaLevel: 'password',
+        createdAt: persistent.createdAt.getTime(),
+        lastActivityAt: Date.now(),
+        absoluteExpiresAt: persistent.expiresAt.getTime(),
+      };
+      touch.mockResolvedValue(state);
+      if (variation === 'missing') findSession.mockResolvedValue(null);
+      if (variation === 'revoked') persistent.status = 'REVOKED';
+      if (variation === 'expired')
+        persistent.expiresAt = new Date(Date.now() - 1);
+      if (variation === 'wrong user') persistent.userId = rows[0].id;
+      if (variation === 'wrong id') persistent.id = rows[0].id;
+      if (variation === 'createdAt')
+        persistent.createdAt = new Date(state.createdAt - 1);
+      if (variation === 'absolute expiry')
+        persistent.expiresAt = new Date(state.absoluteExpiresAt + 1);
+      await call(valid, 401, unauthenticated);
+    },
+  );
+  it.each(['Redis', 'Prisma'])(
+    'returns sanitized server_error for %s session failure, not 401',
+    async (stage) => {
+      const failure = new Error(
+        `private driver cause ${currentId} ${currentUser}`,
+        { cause: new Error('private cause') },
+      );
+      if (stage === 'Redis') touch.mockRejectedValue(failure);
+      else findSession.mockRejectedValue(failure);
+      await call(valid, 500, {
+        error: 'server_error',
+        error_description: 'Authorization request failed.',
+      });
+    },
+  );
+  it('touches only after client, redirect, PKCE and allowed-scope validation succeeded', async () => {
+    await call({ ...valid, scope: 'unknown.scope' }, 400, {
+      ...badRequest,
+      error: 'invalid_scope',
+    });
+    expect(touch).not.toHaveBeenCalled();
+    await call(valid, 204);
+    expect(touch).toHaveBeenCalledExactlyOnceWith(currentId);
+    expect(findAllowed.mock.invocationCallOrder[1]).toBeLessThan(
+      touch.mock.invocationCallOrder[0],
+    );
+    expect(touch.mock.invocationCallOrder[0]).toBeLessThan(
+      findSession.mock.invocationCallOrder[0],
+    );
   });
   it('sanitizes Prisma/lookup errors into a fixed OAuth 500 without cause/logging', async () => {
     findUnique.mockRejectedValueOnce(

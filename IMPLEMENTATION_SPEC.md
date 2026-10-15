@@ -230,12 +230,43 @@ code_challenge   # required for public client
 code_challenge_method=S256
 ```
 
-M5.1 exposes only a validation boundary at GET /oauth/authorize through a
-non-global OAuthModule importing ClientRegistryModule. Successful validation is
-temporarily HTTP 204 with no body; M5.4-M5.6 will replace this with the actual
-session/authorization flow. M5.1 never emits Location or Set-Cookie and sets
-Cache-Control: no-store. No session/login/consent, code/token issuance, Redis
-state or persistence writes are performed; M5.3 adds transient granted scopes only.
+M5.1-M5.4 expose GET /oauth/authorize through a non-global OAuthModule importing
+ClientRegistryModule and SessionAuthenticationModule. M5.1-M5.3 validate the OAuth
+request before M5.4 authenticates the existing central IdP session. Authenticated
+continuation is temporarily HTTP 204 with no body until M5.5/M5.6 add code/response
+behavior. All responses set Cache-Control: no-store and never emit Location or
+Set-Cookie. No consent, code/token issuance, OAuth persistence or continuation
+state is added; requested/granted scopes and authenticated subject remain transient.
+
+M5.4 order: parse -> response_type -> enabled client -> exact redirect -> PKCE
+-> allowed-scope lookup -> granted-scope policy -> central-session authentication.
+Any earlier request/policy failure returns its existing 400 OAuth error without
+parsing/touching a session. OAuth validation or session infrastructure failure
+returns the existing safe 500 server_error with description Authorization request failed.
+
+SessionAuthenticationModule exports one internal IdpSessionAuthenticationService,
+also reused by M3.6 own-session management. Configured cookie parsing is the only
+browser identifier authority, followed by the existing Redis touch and matching
+ACTIVE PostgreSQL Session with expiresAt > now. UUID/userId, createdAt and absolute
+expiry must match runtime/persistent state exactly. Cookie recognition or either
+store alone is not authentication; query/body/custom headers/Bearer/state are never
+session or subject authorities. No global middleware, guard or session-check route.
+
+Missing/malformed/duplicate cookie, absent/expired runtime or missing/revoked/
+expired/incoherent persistent state return the same HTTP 401
+`{statusCode: 401, error: "Unauthorized", message: "Authentication required."}`.
+Redis/Prisma failures instead throw sanitized internal errors, not unauthenticated
+results. Touch may advance only existing Redis idle activity/TTL, capped by the
+same absolute expiry; authTime, createdAt, mfaLevel and PostgreSQL lastActivityAt
+are unchanged. Missing state is never recreated and there is no store fallback.
+
+There is no IdP HTML login UI yet. The M5.4 login/resume contract is: valid
+authorize without a session -> 401 -> existing POST /auth/login -> iam.sid ->
+resubmit the SAME original authorize request with that cookie -> authenticated
+204 continuation. No redirect to a new login route, return_to cookie, stored
+request, Redis continuation key or new database object is introduced. Internal
+continuation exposes only trusted sessionId/userId/authTime/mfaLevel alongside
+validated OAuth data; none is returned in the HTTP response. M5.5/M5.6 remain separate.
 
 One Zod boundary accepts framework-decoded scalar strings only. Base fields
 response_type, client_id, redirect_uri, scope and state are required/non-empty;
@@ -1004,7 +1035,8 @@ intersection with first-request occurrence order and duplicate grant names remov
 without mutating either input. request.scope retains all parsed requested tokens;
 the successful internal result exposes a separate grantedScopes array. It is
 transient only, not persisted or returned through HTTP. No authorization-code,
-session or token state is added; HTTP success remains interim empty 204.
+session or token state is added by M5.3; authenticated HTTP continuation remains
+interim empty 204 under M5.4.
 
 Policy rejection returns direct HTTP 400
 `{error: "invalid_scope", error_description: "Invalid authorization request."}`.

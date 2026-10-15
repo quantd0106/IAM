@@ -3,15 +3,28 @@ import 'reflect-metadata';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { setTimeout } from 'node:timers/promises';
 import type { Server } from 'node:http';
 import type { INestApplication, LoggerService } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import {
+  validateEnvironment,
+  type Environment,
+} from '../src/config/env.schema.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createClient, RESP_TYPES } from 'redis';
 import { PrismaClient, type Prisma } from '../src/generated/prisma/client.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { OAuthModule } from '../src/oauth/oauth.module.js';
 import { AuthorizationRequestService } from '../src/oauth/authorization-request.service.js';
+import { AppModule } from '../src/app.module.js';
+import { RedisService } from '../src/redis/redis.service.js';
+import { IdpSessionStateService } from '../src/session/idp-session-state.service.js';
+import { IdpSessionCookieService } from '../src/session/idp-session-cookie.service.js';
+import { IdpSessionAuthenticationService } from '../src/session/idp-session-authentication.service.js';
+import { PasswordService } from '../src/security/password/password.service.js';
+import { buildRedisKey } from '../src/redis/redis-key.js';
 
 const demos = [
   { clientId: 'student-spa', redirectUri: 'http://localhost:3200/callback' },
@@ -39,6 +52,11 @@ const invalid = {
   error_description: 'Invalid authorization request.',
 };
 const invalidScope = { ...invalid, error: 'invalid_scope' };
+const unauthenticated = {
+  statusCode: 401,
+  error: 'Unauthorized',
+  message: 'Authentication required.',
+};
 let verifiedHttpCases = 0;
 type Snapshot = { relation: string; count: number; fingerprint: string }[];
 const snapshot = (
@@ -86,10 +104,12 @@ async function checkHttp(
   query: Record<string, string> | URLSearchParams,
   status: number,
   body = invalid,
+  cookie?: string,
 ): Promise<void> {
   const url = new URL('/oauth/authorize', origin);
   url.search = new URLSearchParams(query).toString();
   const response = await fetch(url, {
+    headers: cookie === undefined ? {} : { Cookie: cookie },
     redirect: 'manual',
     signal: AbortSignal.timeout(5000),
   });
@@ -98,10 +118,31 @@ async function checkHttp(
   assert.equal(response.headers.get('set-cookie'), null);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   if (status === 204) assert.equal(await response.text(), '');
-  else assert.deepEqual(await response.json(), body);
+  else
+    assert.deepEqual(
+      await response.json(),
+      status === 401 ? unauthenticated : body,
+    );
   verifiedHttpCases++;
 }
-async function checkCanonicalHttp(origin: string): Promise<void> {
+async function checkCanonicalHttp(
+  origin: string,
+  cookie?: string,
+): Promise<void> {
+  // M5.4: formerly valid 204 requests require authentication first. All earlier
+  // 400 contracts stay unchanged, with or without a browser cookie.
+  const check = (
+    query: Record<string, string> | URLSearchParams,
+    status: number,
+    body = invalid,
+  ): Promise<void> =>
+    checkHttp(
+      origin,
+      query,
+      status === 204 && cookie === undefined ? 401 : status,
+      body,
+      cookie,
+    );
   for (const demo of demos) {
     const query: Record<string, string> = {
       ...student,
@@ -112,13 +153,9 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
       delete query.code_challenge;
       delete query.code_challenge_method;
     }
-    await checkHttp(origin, query, 204);
+    await check(query, 204);
   }
-  await checkHttp(
-    origin,
-    { ...student, client_id: `m5.1-unknown-${randomUUID()}` },
-    400,
-  );
+  await check({ ...student, client_id: `m5.1-unknown-${randomUUID()}` }, 400);
   for (const redirect_uri of [
     'https://unregistered.example.invalid/callback',
     `${student.redirect_uri}/`,
@@ -129,17 +166,16 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
     'http://localhost:3200/prefix/callback',
     'http://localhost:3200/*',
   ])
-    await checkHttp(origin, { ...student, redirect_uri }, 400);
+    await check({ ...student, redirect_uri }, 400);
   const withoutNonce: Record<string, string> = { ...student };
   delete withoutNonce.nonce;
-  await checkHttp(origin, withoutNonce, 400);
+  await check(withoutNonce, 400);
   const withoutPkce: Record<string, string> = { ...student };
   delete withoutPkce.code_challenge;
   delete withoutPkce.code_challenge_method;
-  await checkHttp(origin, withoutPkce, 400);
-  await checkHttp(origin, { ...student, code_challenge_method: 'plain' }, 400);
-  await checkHttp(
-    origin,
+  await check(withoutPkce, 400);
+  await check({ ...student, code_challenge_method: 'plain' }, 400);
+  await check(
     new URLSearchParams([
       ...Object.entries(student),
       ['state', 'duplicate-m51-state'],
@@ -147,13 +183,8 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
     400,
   );
   // M5.3 supersedes syntax-only acceptance of unassigned scope tokens.
-  await checkHttp(
-    origin,
-    { ...student, scope: 'custom.scope OpenID' },
-    400,
-    invalidScope,
-  );
-  await checkHttp(origin, { ...student, response_type: 'token' }, 400, {
+  await check({ ...student, scope: 'custom.scope OpenID' }, 400, invalidScope);
+  await check({ ...student, response_type: 'token' }, 400, {
     ...invalid,
     error: 'unsupported_response_type',
   });
@@ -165,15 +196,15 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
       client_id: demo.clientId,
       redirect_uri: demo.redirectUri,
     };
-    await checkHttp(origin, query, 204);
+    await check(query, 204);
     const challengeOnly = { ...query };
     delete challengeOnly.code_challenge_method;
-    await checkHttp(origin, challengeOnly, 400);
+    await check(challengeOnly, 400);
     const methodOnly = { ...query };
     delete methodOnly.code_challenge;
-    await checkHttp(origin, methodOnly, 400);
+    await check(methodOnly, 400);
     for (const code_challenge_method of ['plain', 's256', ' S256', 'S256 '])
-      await checkHttp(origin, { ...query, code_challenge_method }, 400);
+      await check({ ...query, code_challenge_method }, 400);
     for (const code_challenge of [
       '',
       'x',
@@ -195,7 +226,7 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
       ].map((character) => `${'A'.repeat(42)}${character}`),
       `${'A'.repeat(40)}%2D`,
     ])
-      await checkHttp(origin, { ...query, code_challenge }, 400);
+      await check({ ...query, code_challenge }, 400);
   }
 
   // Canonical ClientScope assignments; no fixture/seed changes are needed.
@@ -211,8 +242,7 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
   ] as const) {
     const demo = demos.find((item) => item.clientId === clientId);
     assert.ok(demo);
-    await checkHttp(
-      origin,
+    await check(
       {
         ...student,
         client_id: clientId,
@@ -243,6 +273,9 @@ async function checkAuthorizationRequests(): Promise<void> {
   const prisma = new PrismaClient({
     adapter: new PrismaPg({ connectionString, connectionTimeoutMillis: 5000 }),
   });
+  const config = new ConfigService<Environment, true>(
+    validateEnvironment(process.env),
+  );
   // Read-only observer, never injected into OAuthModule or used by the endpoint.
   const redis = createClient({
     url: redisUrl,
@@ -298,6 +331,15 @@ async function checkAuthorizationRequests(): Promise<void> {
     const context = await Test.createTestingModule({ imports: [OAuthModule] })
       .overrideProvider(PrismaService)
       .useValue(tx)
+      .overrideProvider(RedisService)
+      .useValue({})
+      .overrideProvider(IdpSessionStateService)
+      .useValue({
+        touch: () => {
+          throw new Error('No-cookie regression must not touch Redis.');
+        },
+      })
+      .useMocker((token) => (token === ConfigService ? config : undefined))
       .setLogger(logger)
       .compile();
     const app: INestApplication<Server> = context.createNestApplication<
@@ -322,6 +364,375 @@ async function checkAuthorizationRequests(): Promise<void> {
       assert.equal(capturedLogs, 0);
     } finally {
       await app.close();
+    }
+  };
+  const checkSessionFlow = async (): Promise<void> => {
+    const userId = randomUUID();
+    const marker = `m5.4-${randomUUID()}`;
+    const email = `${marker}@example.invalid`;
+    const password = `temporary-${randomUUID()}`;
+    const ids = new Set<string>();
+    const key = (id: string): string => buildRedisKey('session', id);
+    const rateKey = buildRedisKey('rate', userId, 'login-failure');
+    let app: INestApplication<Server> | undefined;
+    let redisFault = false;
+    let prismaFault = false;
+    let touches = 0;
+    let persistentReads = 0;
+    let createdUser = false;
+    try {
+      // Short idle TTL only in this temporary app; production/env defaults stay frozen.
+      const probeConfig = new ConfigService<Environment, true>({
+        ...validateEnvironment(process.env),
+        SESSION_IDLE_TTL_SECONDS: 5,
+      });
+      const module = await Test.createTestingModule({ imports: [AppModule] })
+        .setLogger(logger)
+        .overrideProvider(ConfigService)
+        .useValue(probeConfig)
+        .overrideProvider(IdpSessionAuthenticationService)
+        .useFactory({
+          inject: [
+            IdpSessionStateService,
+            PrismaService,
+            IdpSessionCookieService,
+          ],
+          factory: (
+            states: IdpSessionStateService,
+            database: PrismaService,
+            cookies: IdpSessionCookieService,
+          ) =>
+            new IdpSessionAuthenticationService(
+              {
+                touch: (id) => {
+                  touches++;
+                  if (redisFault)
+                    throw new Error('Controlled private Redis probe fault.');
+                  return states.touch(id);
+                },
+              },
+              {
+                session: {
+                  findFirst: (input: Prisma.SessionFindFirstArgs) => {
+                    persistentReads++;
+                    if (prismaFault)
+                      throw new Error(
+                        'Controlled private PostgreSQL probe fault.',
+                      );
+                    return database.session.findFirst(input);
+                  },
+                },
+              } as unknown as PrismaService,
+              cookies,
+            ),
+        })
+        .compile();
+      app = module.createNestApplication<INestApplication<Server>>({ logger });
+      await app.listen(0, '127.0.0.1');
+      const temporaryOrigin = await app.getUrl();
+      const runtime = app.get(IdpSessionStateService);
+      const runtimeRedis = app.get(RedisService);
+      const cookies = app.get(IdpSessionCookieService);
+      const deadline = Date.now() + 10000;
+      for (;;) {
+        try {
+          await runtimeRedis.ttl(rateKey);
+          break;
+        } catch {
+          if (Date.now() >= deadline)
+            throw new Error('Authorization probe Redis readiness timeout.');
+          await setTimeout(50);
+        }
+      }
+      const passwordHash = await app.get(PasswordService).hash(password);
+      assert.equal(await prisma.user.count({ where: { id: userId } }), 0);
+      // Claim this absent UUID before the write so an uncertain create failure
+      // still cleans only the exact fixture identity chosen by this probe.
+      createdUser = true;
+      await prisma.user.create({
+        data: {
+          id: userId,
+          email,
+          username: marker,
+          credential: { create: { passwordHash } },
+        },
+      });
+      capturedLogs = 0;
+      const login = async (targetOrigin: string): Promise<string> => {
+        const response = await fetch(new URL('/auth/login', targetOrigin), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            identifier: { type: 'email', value: email },
+            password,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        assert.equal(response.status, 204);
+        assert.equal(await response.text(), '');
+        const setCookies = response.headers.getSetCookie();
+        assert.equal(setCookies.length, 1);
+        const id = cookies.parse(setCookies[0].split(';')[0]);
+        assert.ok(id);
+        ids.add(id);
+        assert.equal(setCookies[0], cookies.serialize(id));
+        return id;
+      };
+      const cookie = (id: string): string =>
+        cookies.serialize(id).split(';')[0];
+      // The exact same query is resubmitted, not persisted/rewritten as a continuation.
+      for (const targetOrigin of [temporaryOrigin, origin]) {
+        await checkHttp(targetOrigin, student, 401);
+        const id = await login(targetOrigin);
+        const persistentBefore = await prisma.session.findUniqueOrThrow({
+          where: { id },
+        });
+        const stateBefore = await runtime.read(id);
+        assert.ok(stateBefore);
+        assert.equal(stateBefore.userId, userId);
+        assert.equal(
+          stateBefore.createdAt,
+          persistentBefore.createdAt.getTime(),
+        );
+        assert.equal(
+          stateBefore.absoluteExpiresAt,
+          persistentBefore.expiresAt.getTime(),
+        );
+        await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+        assert.deepEqual(
+          await prisma.session.findUniqueOrThrow({ where: { id } }),
+          persistentBefore,
+        );
+        const continued = await app
+          .get(IdpSessionAuthenticationService)
+          .authenticate(cookie(id));
+        assert.ok(continued);
+        assert.equal(continued.userId, userId);
+        assert.equal(continued.sessionId, id);
+        if (targetOrigin === temporaryOrigin) {
+          await setTimeout(1100);
+          const idleBefore = await redis.pTTL(key(id));
+          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          const idleAfter = await redis.pTTL(key(id));
+          assert.ok(idleAfter > idleBefore + 500 && idleAfter <= 5000);
+          const after = await runtime.read(id);
+          assert.ok(after);
+          assert.ok(after.lastActivityAt > stateBefore.lastActivityAt);
+          assert.deepEqual(
+            { ...after, lastActivityAt: stateBefore.lastActivityAt },
+            stateBefore,
+          );
+          assert.deepEqual(
+            await prisma.session.findUniqueOrThrow({ where: { id } }),
+            persistentBefore,
+          );
+          // Existing M5.1-M5.3 matrix now also runs with a genuine central session.
+          await checkCanonicalHttp(targetOrigin, cookie(id));
+          const untouched = await redis.get(key(id));
+          const touchCount = touches;
+          await checkHttp(
+            targetOrigin,
+            { ...student, redirect_uri: 'https://invalid.example.invalid' },
+            400,
+            invalid,
+            cookie(id),
+          );
+          await checkHttp(
+            targetOrigin,
+            { ...student, scope: 'definitely.unknown' },
+            400,
+            invalidScope,
+            cookie(id),
+          );
+          assert.equal(touches, touchCount);
+          assert.equal(await redis.get(key(id)), untouched);
+          redisFault = true;
+          const reads = persistentReads;
+          await checkHttp(
+            targetOrigin,
+            student,
+            500,
+            {
+              error: 'server_error',
+              error_description: 'Authorization request failed.',
+            },
+            cookie(id),
+          );
+          assert.equal(persistentReads, reads);
+          redisFault = false;
+          prismaFault = true;
+          await checkHttp(
+            targetOrigin,
+            student,
+            500,
+            {
+              error: 'server_error',
+              error_description: 'Authorization request failed.',
+            },
+            cookie(id),
+          );
+          prismaFault = false;
+          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+        }
+        const logout = await fetch(new URL('/auth/logout', targetOrigin), {
+          method: 'POST',
+          headers: { Cookie: cookie(id) },
+          signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(logout.status, 204);
+        assert.equal(await logout.text(), '');
+        assert.deepEqual(logout.headers.getSetCookie(), [cookies.clear()]);
+        await checkHttp(targetOrigin, student, 401, invalid, cookie(id));
+        assert.equal(await runtime.read(id), null);
+        assert.equal(
+          (await prisma.session.findUniqueOrThrow({ where: { id } })).status,
+          'REVOKED',
+        );
+      }
+      for (const invalidCookie of [
+        '',
+        'iam.sid=bad',
+        `${config.getOrThrow('COOKIE_NAME', { infer: true })}=bad`,
+        `${cookie([...ids][0])}; ${cookie([...ids][0])}`,
+      ])
+        await checkHttp(temporaryOrigin, student, 401, invalid, invalidCookie);
+      await checkHttp(
+        temporaryOrigin,
+        { ...student, sessionId: [...ids][0], userId },
+        401,
+      );
+
+      // All incoherent/expired fixtures are owned by this probe, never canonical data.
+      for (const variant of [
+        'missing runtime',
+        'expired runtime',
+        'corrupt runtime',
+        'missing row',
+        'revoked',
+        'expired row',
+        'wrong user',
+        'createdAt',
+        'absolute expiry',
+      ]) {
+        const id = randomUUID();
+        ids.add(id);
+        const now = Date.now();
+        const expiresAt = now + 60000;
+        if (variant !== 'missing row')
+          await prisma.session.create({
+            data: {
+              id,
+              userId,
+              status: variant === 'revoked' ? 'REVOKED' : 'ACTIVE',
+              createdAt: new Date(now),
+              lastActivityAt: new Date(now),
+              expiresAt: new Date(
+                variant === 'expired row' ? now - 1 : expiresAt,
+              ),
+            },
+          });
+        if (variant !== 'missing runtime')
+          await runtime.create(id, {
+            userId: variant === 'wrong user' ? randomUUID() : userId,
+            authTime: now,
+            mfaLevel: 'password',
+            createdAt: variant === 'createdAt' ? now - 1 : now,
+            lastActivityAt: now,
+            absoluteExpiresAt:
+              variant === 'absolute expiry' ? expiresAt + 1 : expiresAt,
+          });
+        if (variant === 'corrupt runtime')
+          await redis.set(key(id), '{', { PX: 5000 });
+        if (variant === 'expired runtime') {
+          await redis.pExpire(key(id), 1);
+          await setTimeout(30);
+        }
+        const rowsBefore = await snapshot(prisma);
+        await checkHttp(temporaryOrigin, student, 401, invalid, cookie(id));
+        assert.deepEqual(await snapshot(prisma), rowsBefore);
+        if (
+          ['missing runtime', 'expired runtime', 'corrupt runtime'].includes(
+            variant,
+          )
+        )
+          assert.equal(await redis.get(key(id)), null);
+      }
+      const boundedId = randomUUID();
+      ids.add(boundedId);
+      const now = Date.now();
+      const absolute = now + 2000;
+      await prisma.session.create({
+        data: {
+          id: boundedId,
+          userId,
+          createdAt: new Date(now),
+          lastActivityAt: new Date(now),
+          expiresAt: new Date(absolute),
+        },
+      });
+      await runtime.create(boundedId, {
+        userId,
+        authTime: now,
+        mfaLevel: 'password',
+        createdAt: now,
+        lastActivityAt: now,
+        absoluteExpiresAt: absolute,
+      });
+      await checkHttp(
+        temporaryOrigin,
+        student,
+        204,
+        invalid,
+        cookie(boundedId),
+      );
+      const boundedTtl = await redis.pTTL(key(boundedId));
+      assert.ok(boundedTtl > 0 && boundedTtl <= absolute - Date.now() + 50);
+      await setTimeout(Math.max(0, absolute - Date.now()) + 50);
+      await checkHttp(
+        temporaryOrigin,
+        student,
+        401,
+        invalid,
+        cookie(boundedId),
+      );
+      assert.equal(await redis.get(key(boundedId)), null);
+      assert.equal(
+        (
+          await prisma.session.findUniqueOrThrow({ where: { id: boundedId } })
+        ).expiresAt.getTime(),
+        absolute,
+      );
+      assert.equal(capturedLogs, 0);
+    } finally {
+      redisFault = false;
+      prismaFault = false;
+      try {
+        await app?.close();
+      } finally {
+        if (createdUser) {
+          const owned = await prisma.session.findMany({
+            where: { userId },
+            select: { id: true },
+          });
+          for (const row of owned) ids.add(row.id);
+          for (const id of ids) {
+            await redis.del(key(id));
+            assert.equal(await redis.get(key(id)), null);
+          }
+          await redis.del(rateKey);
+          assert.equal(await redis.get(rateKey), null);
+          await prisma.$transaction([
+            prisma.session.deleteMany({ where: { userId } }),
+            prisma.credential.deleteMany({ where: { userId } }),
+            prisma.user.deleteMany({
+              where: { id: userId, email, username: marker },
+            }),
+          ]);
+          assert.equal(await prisma.user.count({ where: { id: userId } }), 0);
+          assert.equal(await prisma.session.count({ where: { userId } }), 0);
+          assert.equal(await prisma.credential.count({ where: { userId } }), 0);
+        }
+      }
     }
   };
   try {
@@ -388,6 +799,7 @@ async function checkAuthorizationRequests(): Promise<void> {
     assert.ok(completed);
     // Also exercise the rebuilt full application, including its unchanged global filters.
     await checkCanonicalHttp(origin);
+    await checkSessionFlow();
     const health = await fetch(new URL('/health', origin), {
       signal: AbortSignal.timeout(5000),
     });
@@ -399,16 +811,16 @@ async function checkAuthorizationRequests(): Promise<void> {
     assert.deepEqual(await redisSnapshot(), redisBefore);
     Object.assign(console, originals);
     console.log(
-      'M5.1 real PostgreSQL/HTTP passed: canonical 204, unknown/disabled rejected, exact URI/nonce/PUBLIC S256 checks, duplicate rejection, no Location or Set-Cookie, fixed OAuth errors.',
+      'M5.1-M5.4 real PostgreSQL/HTTP passed: OAuth validation precedes session authentication; fixed 400/401/500, authenticated 204, no Location or new Set-Cookie.',
     );
     console.log(
-      'Read-only transaction/zero-write counters/disabled fixture rollback/full-row fingerprints passed; canonical registry and all domain/migration rows unchanged.',
+      'Read-only validation/counters/disabled fixture rollback passed; authorization performs no PostgreSQL writes; login/session fixtures cleaned; full-row fingerprints and canonical registry unchanged.',
     );
     console.log(
-      'Rebuilt application HTTP and /health passed; temporary HTTP servers closed; grants remain transient, no session/code/token or persistence behavior added.',
+      'Real login -> cookie -> same authorization request -> logout passed on temporary and Compose apps; Redis idle touch/absolute cap, coherence and controlled Redis/Prisma faults passed; temporary server/clients closed.',
     );
     console.log(
-      `M5.1-M5.3 passed ${verifiedHttpCases} real HTTP authorization cases; exact allowed scopes/invalid_scope and transient ordered deduplicated grants verified; PKCE preserved; Redis key/value snapshot unchanged.`,
+      `M5.1-M5.4 passed ${verifiedHttpCases} real HTTP authorization cases; PKCE/scope regressions preserved; no code/token/continuation state; Redis snapshot restored unchanged.`,
     );
   } finally {
     Object.assign(console, originals);

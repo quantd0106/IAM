@@ -12,6 +12,7 @@ import { LoginValidationService } from './login-validation.service.js';
 import { LoginAttemptService } from './login-attempt.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { SessionModule } from '../session/session.module.js';
+import { SessionAuthenticationModule } from '../session/session-authentication.module.js';
 import { IdpLoginService } from './idp-login.service.js';
 import { IdpLogoutService } from './idp-logout.service.js';
 import { PasswordChangeService } from './password-change.service.js';
@@ -23,7 +24,12 @@ import {
 } from './password-reset-delivery.js';
 
 @Module({
-  imports: [PrismaModule, RedisModule, SessionModule],
+  imports: [
+    PrismaModule,
+    RedisModule,
+    SessionModule,
+    SessionAuthenticationModule,
+  ],
   controllers: [AuthController, AuthSessionsController],
   providers: [
     RegistrationService,

@@ -586,7 +586,7 @@ Acceptance criteria:
 
 ## M5.4 — Integrate IdP session check
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

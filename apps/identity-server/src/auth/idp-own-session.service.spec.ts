@@ -5,6 +5,7 @@ import { IdpSessionStateService } from '../session/idp-session-state.service.js'
 import type { IdpSessionState } from '../session/idp-session-state.js';
 import { IdpLogoutService } from './idp-logout.service.js';
 import { IdpOwnSessionService } from './idp-own-session.service.js';
+import { IdpSessionAuthenticationService } from '../session/idp-session-authentication.service.js';
 
 const currentId = '9d3d959a-c65b-4ffc-8086-ad563e59f198';
 const targetId = '227a22b1-b3c2-4b26-9c3d-e581c7c8f698';
@@ -74,6 +75,13 @@ describe('IdpOwnSessionService', () => {
       session: { findFirst, findMany, updateMany },
     } as unknown as PrismaService,
     logout as unknown as IdpLogoutService,
+    new IdpSessionAuthenticationService(
+      states,
+      {
+        session: { findFirst, findMany, updateMany },
+      } as unknown as PrismaService,
+      { parse: () => null },
+    ),
   );
   beforeEach(() => {
     vi.resetAllMocks();

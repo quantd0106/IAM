@@ -1,25 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { IdpSessionStateService } from '../session/idp-session-state.service.js';
-import {
-  sessionIdSchema,
-  type IdpSessionState,
-} from '../session/idp-session-state.js';
+import { sessionIdSchema } from '../session/idp-session-state.js';
 import { IdpLogoutService } from './idp-logout.service.js';
-
-const sessionSelect = {
-  id: true,
-  userId: true,
-  status: true,
-  createdAt: true,
-  expiresAt: true,
-  ipAddress: true,
-  userAgent: true,
-} as const;
-type PersistentSession = Prisma.SessionGetPayload<{
-  select: typeof sessionSelect;
-}>;
+import {
+  IdpSessionAuthenticationService,
+  isCoherentIdpSession,
+  sessionAuthenticationSelect as sessionSelect,
+} from '../session/idp-session-authentication.service.js';
 
 export type OwnSession = {
   id: string;
@@ -47,11 +35,14 @@ export class IdpOwnSessionService {
     private readonly states: IdpSessionStateService,
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(IdpLogoutService) private readonly logout: IdpLogoutService,
+    @Inject(IdpSessionAuthenticationService)
+    private readonly authentication: IdpSessionAuthenticationService,
   ) {}
 
   async list(currentSessionId: string): Promise<OwnSessionListResult> {
     try {
-      const authenticated = await this.authenticate(currentSessionId);
+      const authenticated =
+        await this.authentication.authenticateSessionId(currentSessionId);
       if (authenticated === null)
         return { ok: false, reason: 'UNAUTHENTICATED' };
       const { state, now } = authenticated;
@@ -75,7 +66,10 @@ export class IdpOwnSessionService {
         // Reuse the current touch result; listing never refreshes other sessions.
         const runtime =
           row.id === currentSessionId ? state : await this.states.read(row.id);
-        if (runtime === null || !this.coherent(row, runtime, state.userId, now))
+        if (
+          runtime === null ||
+          !isCoherentIdpSession(row, runtime, state.userId, now)
+        )
           continue;
         sessions.push({
           id: row.id,
@@ -103,7 +97,8 @@ export class IdpOwnSessionService {
     if (!sessionIdSchema.safeParse(targetSessionId).success)
       return { ok: false, reason: 'INVALID_IDENTIFIER' };
     try {
-      const authenticated = await this.authenticate(currentSessionId);
+      const authenticated =
+        await this.authentication.authenticateSessionId(currentSessionId);
       if (authenticated === null)
         return { ok: false, reason: 'UNAUTHENTICATED' };
       const target = await this.prisma.session.findFirst({
@@ -119,47 +114,5 @@ export class IdpOwnSessionService {
     } catch {
       throw new Error('IdP own-session management failed.');
     }
-  }
-
-  private async authenticate(currentSessionId: string): Promise<{
-    state: IdpSessionState;
-    now: Date;
-  } | null> {
-    if (!sessionIdSchema.safeParse(currentSessionId).success) return null;
-    const state = await this.states.touch(currentSessionId);
-    if (state === null) return null;
-    const now = new Date();
-    const row = await this.prisma.session.findFirst({
-      where: {
-        id: currentSessionId,
-        userId: state.userId,
-        status: 'ACTIVE',
-        expiresAt: { gt: now },
-      },
-      select: sessionSelect,
-    });
-    if (
-      row === null ||
-      row.id !== currentSessionId ||
-      !this.coherent(row, state, state.userId, now)
-    )
-      return null;
-    return { state, now };
-  }
-
-  private coherent(
-    row: PersistentSession,
-    state: IdpSessionState,
-    userId: string,
-    now: Date,
-  ): boolean {
-    return (
-      row.userId === userId &&
-      state.userId === userId &&
-      row.status === 'ACTIVE' &&
-      row.expiresAt > now &&
-      row.createdAt.getTime() === state.createdAt &&
-      row.expiresAt.getTime() === state.absoluteExpiresAt
-    );
   }
 }
