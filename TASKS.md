@@ -540,7 +540,7 @@ Depends on: M3.4, M4.6
 
 ## M5.1 — Parse and validate `/oauth/authorize`
 
-Status: [ ]
+Status: [x]
 
 Validate:
 

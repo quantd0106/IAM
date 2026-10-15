@@ -230,6 +230,44 @@ code_challenge   # required for public client
 code_challenge_method=S256
 ```
 
+M5.1 exposes only a validation boundary at GET /oauth/authorize through a
+non-global OAuthModule importing ClientRegistryModule. Successful validation is
+temporarily HTTP 204 with no body; M5.4-M5.6 will replace this with the actual
+session/authorization flow. M5.1 never emits Location or Set-Cookie and sets
+Cache-Control: no-store. No session/login/consent, code/token issuance, Redis
+state, granted scopes or persistence writes are performed.
+
+One Zod boundary accepts framework-decoded scalar strings only. Base fields
+response_type, client_id, redirect_uri, scope and state are required/non-empty;
+known optional strings are non-empty when present. Unknown parameters are
+ignored, not aliased. Repeated recognized parameters (arrays) and object values
+are rejected. No trimming, case conversion, Unicode normalization or additional
+URL decoding/re-encoding occurs. Only response_type=code is supported.
+
+Scope uses RFC 6749 section 3.3 syntax: non-empty ASCII scope tokens separated
+by one SP, with no leading/trailing/repeated spaces, tabs, quotes, backslashes
+or control characters. Preserve token order, duplicates and exact case/content;
+do not query ScopeLookupService or calculate allowed/granted scope sets. Exact
+openid requires a non-empty opaque nonce. State is always opaque/non-empty;
+neither state nor nonce is generated, persisted, logged or echoed.
+
+Resolve only through ClientLookupService.requireEnabledClient. Compare the
+supplied redirect_uri to its exact registered strings using membership, without
+patterns, URL parsing/canonicalization or redirect fallback. Unknown/disabled
+clients and all invalid/unregistered redirects receive the same direct HTTP 400
+JSON `{error: "invalid_request", error_description: "Invalid authorization request."}`.
+Other shape/nonce/minimal PKCE failures use that same response. A well-shaped
+unsupported response_type receives HTTP 400 unsupported_response_type with the
+same description. Lookup operational/unexpected failures receive fixed HTTP 500
+`{error: "server_error", error_description: "Authorization request failed."}`.
+No query values, internal UUID, private cause or driver detail are returned/logged.
+
+PUBLIC clients require non-empty opaque code_challenge and exact S256 method.
+CONFIDENTIAL clients may omit PKCE; any supplied challenge requires S256, and
+plain/other methods are rejected. No challenge alphabet/length/entropy checks,
+code_verifier, SHA-256 verification or PKCE persistence is added. M5.2 remains a
+separate hardening/policy task; M5.3 owns allowed/granted scopes and invalid_scope.
+
 Authorization code policy:
 
 ```text

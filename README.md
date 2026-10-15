@@ -726,3 +726,20 @@ Sau build/Compose startup, chạy `pnpm --filter identity-server admin-sessions:
 Probe gọi service nội bộ với PostgreSQL/Redis thật, kiểm tra isolation, partial
 failure/retry, concurrency, snapshot và HTTP admin paths vẫn 404; chỉ cleanup data
 của probe và đóng clients, không tạo admin endpoint/server.
+
+## 28. Interim authorization-request validation
+
+`GET /oauth/authorize` hiện chỉ parse/validate request (M5.1), chưa thực hiện
+authorization flow. Request hợp lệ trả 204 không body, Location hoặc Set-Cookie.
+Client/redirect được kiểm tra exact; scope chỉ kiểm tra cú pháp, chưa tính granted
+scopes. State bắt buộc, exact `openid` cần nonce; PUBLIC cần challenge không rỗng
+và S256, confidential client không bị bắt buộc dùng PKCE.
+
+Lỗi validation trả trực tiếp HTTP 400 JSON OAuth với description cố định, không
+echo query values hoặc redirect tới URI do caller cung cấp. Lỗi nội bộ trả 500 an
+toàn. Chi tiết contract nằm trong implementation spec; M5.4-M5.6 sẽ thay behavior
+204 tạm thời bằng flow session/authorization. Không có code/token/session mới.
+
+Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
+Probe kiểm tra PostgreSQL/HTTP thật, read-only counters và disabled fixture chỉ
+rollback; giữ nguyên canonical seed data và đóng HTTP servers tạm sau verification.
