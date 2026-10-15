@@ -7,6 +7,7 @@ import {
   AuthorizationRequestService,
   type AuthorizationRequestResult,
 } from './authorization-request.service.js';
+import { AuthorizationCodeService } from './authorization-code.service.js';
 
 export type AuthorizationResult =
   | (Extract<AuthorizationRequestResult, { ok: true }> & {
@@ -14,6 +15,7 @@ export type AuthorizationResult =
         AuthenticatedIdpSession,
         'sessionId' | 'userId' | 'authTime' | 'mfaLevel'
       >;
+      authorizationCode: string;
     })
   | Extract<AuthorizationRequestResult, { ok: false }>
   | { ok: false; error: 'authentication_required' };
@@ -28,6 +30,8 @@ export class AuthorizationService {
       IdpSessionAuthenticationService,
       'authenticate'
     >,
+    @Inject(AuthorizationCodeService)
+    private readonly codes: Pick<AuthorizationCodeService, 'issue'>,
   ) {}
 
   async authorize(
@@ -40,9 +44,18 @@ export class AuthorizationService {
       const session = await this.sessions.authenticate(cookieHeader);
       if (session === null)
         return { ok: false, error: 'authentication_required' };
-      // Trusted transient subject for later M5.5; never persisted or sent by M5.4.
+      const { code } = await this.codes.issue({
+        clientId: validated.client.clientId,
+        userId: session.userId,
+        redirectUri: validated.request.redirect_uri,
+        grantedScopes: validated.grantedScopes,
+        codeChallenge: validated.request.code_challenge ?? null,
+        nonce: validated.request.nonce ?? null,
+        authTime: session.authTime,
+      });
       return {
         ...validated,
+        authorizationCode: code,
         session: {
           sessionId: session.sessionId,
           userId: session.userId,

@@ -25,7 +25,11 @@ const { client, createClientMock } = vi.hoisted(() => {
     close: vi.fn<() => Promise<void>>(),
     destroy: vi.fn<() => void>(),
     set: vi.fn<
-      (key: string, value: string, options?: { EX: number }) => Promise<string>
+      (
+        key: string,
+        value: string,
+        options?: { EX: number; NX?: boolean },
+      ) => Promise<string | null>
     >(),
     get: vi.fn<(key: string) => Promise<string | null>>(),
     getDel: vi.fn<(key: string) => Promise<string | null>>(),
@@ -331,6 +335,61 @@ describe('RedisService', () => {
     await expect(new RedisService(config).get('test:key')).rejects.toThrow(
       'command failed',
     );
+  });
+  describe('conditional TTL reservation', () => {
+    it.each([
+      ['OK', true],
+      [null, false],
+    ] as const)(
+      'uses one NX + EX SET and returns reservation outcome (%#)',
+      async (reply, expected) => {
+        client.set.mockResolvedValue(reply);
+        expect(
+          await new RedisService(config).setIfAbsentWithTtl(
+            'test:reserved',
+            'value',
+            120,
+          ),
+        ).toBe(expected);
+        expect(client.set).toHaveBeenCalledExactlyOnceWith(
+          'test:reserved',
+          'value',
+          { EX: 120, NX: true },
+        );
+        expect(client.get).not.toHaveBeenCalled();
+        expect(client.del).not.toHaveBeenCalled();
+        expect(client.eval).not.toHaveBeenCalled();
+      },
+    );
+    it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+      'rejects invalid TTL before SET (%#)',
+      async (ttl) => {
+        await expect(
+          new RedisService(config).setIfAbsentWithTtl('test:key', 'value', ttl),
+        ).rejects.toThrow(RangeError);
+        expect(client.set).not.toHaveBeenCalled();
+      },
+    );
+    it('sanitizes failures without logging/cause/key/value/URL', async () => {
+      const log = vi.spyOn(Logger.prototype, 'error');
+      client.set.mockRejectedValue(
+        new Error('private key/value/redis://user:secret@host', {
+          cause: new Error('private cause'),
+        }),
+      );
+      const failure: unknown = await new RedisService(config)
+        .setIfAbsentWithTtl('test:key', 'value', 120)
+        .catch((error: unknown) => error);
+      expect(failure).toEqual(new Error('Redis conditional write failed.'));
+      expect(failure).not.toHaveProperty('cause');
+      expect(log).not.toHaveBeenCalled();
+    });
+    it('fails closed on unexpected SET replies', async () => {
+      client.set.mockResolvedValue('unexpected');
+      await expect(
+        new RedisService(config).setIfAbsentWithTtl('test:key', 'value', 120),
+      ).rejects.toEqual(new Error('Redis conditional write failed.'));
+    });
   });
 
   it.each(['value', null])(

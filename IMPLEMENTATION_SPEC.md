@@ -230,13 +230,13 @@ code_challenge   # required for public client
 code_challenge_method=S256
 ```
 
-M5.1-M5.4 expose GET /oauth/authorize through a non-global OAuthModule importing
-ClientRegistryModule and SessionAuthenticationModule. M5.1-M5.3 validate the OAuth
-request before M5.4 authenticates the existing central IdP session. Authenticated
-continuation is temporarily HTTP 204 with no body until M5.5/M5.6 add code/response
-behavior. All responses set Cache-Control: no-store and never emit Location or
-Set-Cookie. No consent, code/token issuance, OAuth persistence or continuation
-state is added; requested/granted scopes and authenticated subject remain transient.
+M5.1-M5.5 expose GET /oauth/authorize through a non-global OAuthModule importing
+ClientRegistryModule, SessionAuthenticationModule and RedisModule. M5.1-M5.3 validate
+the OAuth request before M5.4 authenticates the existing central IdP session, then
+M5.5 issues/stores a code. Success is temporarily HTTP 204 with no body until M5.6
+adds the callback response. All responses set Cache-Control: no-store and never
+emit Location or Set-Cookie. No consent, token issuance, request-continuation state
+or PostgreSQL writes are added; the raw code and authenticated subject remain internal.
 
 M5.4 order: parse -> response_type -> enabled client -> exact redirect -> PKCE
 -> allowed-scope lookup -> granted-scope policy -> central-session authentication.
@@ -266,7 +266,8 @@ resubmit the SAME original authorize request with that cookie -> authenticated
 204 continuation. No redirect to a new login route, return_to cookie, stored
 request, Redis continuation key or new database object is introduced. Internal
 continuation exposes only trusted sessionId/userId/authTime/mfaLevel alongside
-validated OAuth data; none is returned in the HTTP response. M5.5/M5.6 remain separate.
+validated OAuth data; M5.5 adds a transient authorizationCode only after persistence.
+None is returned in the HTTP response; M5.6 remains separate.
 
 One Zod boundary accepts framework-decoded scalar strings only. Base fields
 response_type, client_id, redirect_uri, scope and state are required/non-empty;
@@ -282,7 +283,8 @@ or control characters. Preserve token order, duplicates and exact case/content;
 parsing does not apply client-specific membership. M5.3 validates that membership
 after client/redirect/PKCE checks as defined in section 18. Exact
 openid requires a non-empty opaque nonce. State is always opaque/non-empty;
-neither state nor nonce is generated, persisted, logged or echoed.
+neither is generated, logged or echoed. OAuth state is never persisted; M5.5
+stores the supplied nonce only in the canonical authorization-code context below.
 
 Resolve only through ClientLookupService.requireEnabledClient. Compare the
 supplied redirect_uri to its exact registered strings using membership, without
@@ -322,7 +324,36 @@ authTime
 expiresAt
 ```
 
-Token endpoint must atomically consume authorization code state so it cannot be replayed.
+M5.5 implements only OAuth-internal AuthorizationCodeService.issue(input), returning
+`{code}` after persistence. Generate `randomBytes(32).toString('base64url')` (256-bit
+input, URL-safe, unpadded); hash the exact raw code with SHA-256 to lowercase hex.
+Use `buildRedisKey('oauth:code', codeHash)`: concrete `oauth:code:<64-hex-hash>` with
+no literal braces. Raw codes exist only transiently in memory, never in Redis,
+PostgreSQL, logs, errors or HTTP bodies. The service is not exported by OAuthModule.
+
+Strict JSON contains exactly the eight fields above. clientId is the validated
+protocol Client.clientId, not internal Client.id; userId/authTime come from the
+authenticated IdP session. Preserve exact validated redirectUri, M5.3 grantedScopes
+and their order, PKCE challenge and nonce. Absent permitted confidential PKCE or
+non-openid nonce is explicit null. No state, sessionId/cookie, profile or token fields.
+Validate non-empty opaque strings, UUID userId, exact scope-token syntax, nullable
+43-character S256 challenge and non-negative safe-integer epoch-ms timestamps.
+
+Capture one issue clock; expiresAt = issue instant + 120000 ms, safely after issue.
+The fixed M5.5 AUTHORIZATION_CODE_TTL_SECONDS policy is 120, not a new env setting;
+the existing configuration surface remains unchanged. RedisService reserves using
+one SET with EX 120 and NX, never a permanent key or overwrite. Retry collisions
+with fresh randomness for at most three attempts; never delete/scan a collided
+entry. Crypto/serialization/Redis/exhaustion failures fail closed with sanitized
+internal errors and the same HTTP 500 server_error boundary. No generation/write
+happens before all M5.1-M5.4 checks succeed. Valid session idle touch may already
+have occurred when code persistence fails; there is no cross-store transaction.
+A lost Redis reply may leave only a hash-keyed TTL-bounded entry, never a success
+response or raw code disclosure.
+
+Token endpoint must atomically consume authorization-code state to prevent replay.
+Consumption/GETDEL/redemption/verifier handling belong to M6 and are not implemented
+by M5.5; returning code/state in a validated callback belongs only to M5.6.
 
 ---
 
@@ -1034,9 +1065,9 @@ any miss; never silently drop forbidden scopes. The pure policy returns the exac
 intersection with first-request occurrence order and duplicate grant names removed,
 without mutating either input. request.scope retains all parsed requested tokens;
 the successful internal result exposes a separate grantedScopes array. It is
-transient only, not persisted or returned through HTTP. No authorization-code,
-session or token state is added by M5.3; authenticated HTTP continuation remains
-interim empty 204 under M5.4.
+transient in M5.3, never returned through HTTP. M5.5 persists that exact result in
+authorization-code state after session authentication; no session or token state
+is added by the scope policy. HTTP success remains interim empty 204 until M5.6.
 
 Policy rejection returns direct HTTP 400
 `{error: "invalid_scope", error_description: "Invalid authorization request."}`.

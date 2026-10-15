@@ -126,6 +126,28 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.client.ttl(key);
   }
 
+  async setIfAbsentWithTtl(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0)
+      throw new RangeError(
+        'Redis TTL must be a positive safe integer in seconds.',
+      );
+    try {
+      const reply: unknown = await this.client.set(key, value, {
+        EX: ttlSeconds,
+        NX: true,
+      });
+      if (reply === 'OK') return true;
+      if (reply === null) return false;
+      throw new Error('Unexpected conditional write reply.');
+    } catch {
+      throw new Error('Redis conditional write failed.');
+    }
+  }
+
   /** Fixed session-only Lua; no raw client or caller-supplied script exposure. */
   async sessionState(
     key: string,

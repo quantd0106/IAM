@@ -2,7 +2,7 @@
 import 'reflect-metadata';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import type { Server } from 'node:http';
 import type { INestApplication, LoggerService } from '@nestjs/common';
@@ -25,6 +25,14 @@ import { IdpSessionCookieService } from '../src/session/idp-session-cookie.servi
 import { IdpSessionAuthenticationService } from '../src/session/idp-session-authentication.service.js';
 import { PasswordService } from '../src/security/password/password.service.js';
 import { buildRedisKey } from '../src/redis/redis-key.js';
+import {
+  AuthorizationCodeService,
+  AUTHORIZATION_CODE_TTL_SECONDS,
+} from '../src/oauth/authorization-code.service.js';
+import {
+  authorizationCodeStateSchema,
+  type AuthorizationCodeInput,
+} from '../src/oauth/authorization-code.state.js';
 
 const demos = [
   { clientId: 'student-spa', redirectUri: 'http://localhost:3200/callback' },
@@ -58,6 +66,14 @@ const unauthenticated = {
   message: 'Authentication required.',
 };
 let verifiedHttpCases = 0;
+let verifyCodeWrite:
+  | ((
+      origin: string,
+      query: Record<string, string> | URLSearchParams,
+      status: number,
+      cookie?: string,
+    ) => Promise<void>)
+  | undefined;
 type Snapshot = { relation: string; count: number; fingerprint: string }[];
 const snapshot = (
   db: Prisma.TransactionClient,
@@ -124,6 +140,7 @@ async function checkHttp(
       status === 401 ? unauthenticated : body,
     );
   verifiedHttpCases++;
+  await verifyCodeWrite?.(origin, query, status, cookie);
 }
 async function checkCanonicalHttp(
   origin: string,
@@ -368,7 +385,7 @@ async function checkAuthorizationRequests(): Promise<void> {
   };
   const checkSessionFlow = async (): Promise<void> => {
     const userId = randomUUID();
-    const marker = `m5.4-${randomUUID()}`;
+    const marker = `m5.5-${randomUUID()}`;
     const email = `${marker}@example.invalid`;
     const password = `temporary-${randomUUID()}`;
     const ids = new Set<string>();
@@ -380,6 +397,20 @@ async function checkAuthorizationRequests(): Promise<void> {
     let touches = 0;
     let persistentReads = 0;
     let createdUser = false;
+    const codeKeys = new Set<string>();
+    const collisionEntries = new Map<string, string>();
+    const attempts: string[] = [];
+    const issued: {
+      code: string;
+      input: AuthorizationCodeInput;
+      before: number;
+      after: number;
+    }[] = [];
+    let collisionsRemaining = 0;
+    let codeFault = false;
+    let reservationFailure = false;
+    let expectedAttempts = 1;
+    let unavailableRedis: RedisService | undefined;
     try {
       // Short idle TTL only in this temporary app; production/env defaults stay frozen.
       const probeConfig = new ConfigService<Environment, true>({
@@ -390,6 +421,51 @@ async function checkAuthorizationRequests(): Promise<void> {
         .setLogger(logger)
         .overrideProvider(ConfigService)
         .useValue(probeConfig)
+        .overrideProvider(AuthorizationCodeService)
+        .useFactory({
+          inject: [RedisService],
+          factory: (liveRedis: RedisService) => {
+            const service = new AuthorizationCodeService({
+              setIfAbsentWithTtl: async (codeKey, serialized, ttl) => {
+                attempts.push(codeKey);
+                assert.ok(/^oauth:code:[0-9a-f]{64}$/.test(codeKey));
+                assert.equal(ttl, 120);
+                if (collisionsRemaining > 0) {
+                  collisionsRemaining--;
+                  const sentinel = 'probe-owned-collision-' + randomUUID();
+                  assert.equal(
+                    await redis.set(codeKey, sentinel, { NX: true, EX: 120 }),
+                    'OK',
+                  );
+                  codeKeys.add(codeKey);
+                  collisionEntries.set(codeKey, sentinel);
+                  await redis.pExpire(codeKey, 30000);
+                }
+                const stored = await (
+                  codeFault ? unavailableRedis! : liveRedis
+                ).setIfAbsentWithTtl(codeKey, serialized, ttl);
+                if (stored) codeKeys.add(codeKey);
+                if (collisionEntries.has(codeKey)) {
+                  assert.ok(
+                    (await redis.get(codeKey)) ===
+                      collisionEntries.get(codeKey),
+                  );
+                  const collisionTtl = await redis.pTTL(codeKey);
+                  assert.ok(collisionTtl > 0 && collisionTtl <= 30000);
+                }
+                return stored;
+              },
+            });
+            return {
+              issue: async (input: AuthorizationCodeInput) => {
+                const before = Date.now();
+                const result = await service.issue(input);
+                issued.push({ ...result, input, before, after: Date.now() });
+                return result;
+              },
+            };
+          },
+        })
         .overrideProvider(IdpSessionAuthenticationService)
         .useFactory({
           inject: [
@@ -433,6 +509,64 @@ async function checkAuthorizationRequests(): Promise<void> {
       const runtime = app.get(IdpSessionStateService);
       const runtimeRedis = app.get(RedisService);
       const cookies = app.get(IdpSessionCookieService);
+      let checkedIssues = 0;
+      let checkedAttempts = 0;
+      let checkedKeys = 0;
+      verifyCodeWrite = async (targetOrigin, query, status, cookieHeader) => {
+        if (targetOrigin !== temporaryOrigin) return;
+        assert.equal(issued.length, checkedIssues + (status === 204 ? 1 : 0));
+        if (status !== 204 && !codeFault && !reservationFailure)
+          assert.equal(attempts.length, checkedAttempts);
+        if (status === 204) {
+          const latest = issued.at(-1)!;
+          const codeKey = buildRedisKey(
+            'oauth:code',
+            createHash('sha256').update(latest.code).digest('hex'),
+          );
+          assert.ok(codeKeys.has(codeKey));
+          assert.ok(!codeKey.includes(latest.code));
+          const value = await redis.get(codeKey);
+          assert.ok(value !== null && !value.includes(latest.code));
+          const stored = authorizationCodeStateSchema.parse(JSON.parse(value));
+          const parameters = new URLSearchParams(query);
+          const id = cookies.parse(cookieHeader);
+          assert.ok(id);
+          const session = await runtime.read(id);
+          assert.ok(session);
+          assert.deepEqual(Object.keys(stored), [
+            'clientId',
+            'userId',
+            'redirectUri',
+            'grantedScopes',
+            'codeChallenge',
+            'nonce',
+            'authTime',
+            'expiresAt',
+          ]);
+          assert.deepEqual(stored, {
+            clientId: parameters.get('client_id'),
+            userId,
+            redirectUri: parameters.get('redirect_uri'),
+            grantedScopes: [...new Set(parameters.get('scope')!.split(' '))],
+            codeChallenge: parameters.get('code_challenge'),
+            nonce: parameters.get('nonce'),
+            authTime: session.authTime,
+            expiresAt: stored.expiresAt,
+          });
+          assert.ok(
+            stored.expiresAt >= latest.before + 120000 &&
+              stored.expiresAt <= latest.after + 120000,
+          );
+          const ttl = await redis.pTTL(codeKey);
+          assert.ok(ttl > 0 && ttl <= AUTHORIZATION_CODE_TTL_SECONDS * 1000);
+          // Each no-collision success reserves exactly one remembered key.
+          assert.equal(attempts.length, checkedAttempts + expectedAttempts);
+          assert.equal(codeKeys.size, checkedKeys + expectedAttempts);
+        }
+        checkedIssues = issued.length;
+        checkedAttempts = attempts.length;
+        checkedKeys = codeKeys.size;
+      };
       const deadline = Date.now() + 10000;
       for (;;) {
         try {
@@ -498,7 +632,40 @@ async function checkAuthorizationRequests(): Promise<void> {
           stateBefore.absoluteExpiresAt,
           persistentBefore.expiresAt.getTime(),
         );
+        const keysBeforeCompose =
+          targetOrigin === origin
+            ? new Set((await redisSnapshot()).map(([redisKey]) => redisKey))
+            : undefined;
         await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+        if (keysBeforeCompose) {
+          // Compose is a black box: bounded local observer only; delete only state
+          // belonging to this absent-before-run fixture UUID, never arbitrary keys.
+          const created = (await redisSnapshot())
+            .map(([redisKey]) => redisKey)
+            .filter((redisKey) => !keysBeforeCompose.has(redisKey));
+          assert.equal(created.length, 1);
+          const codeKey = created[0];
+          assert.ok(/^oauth:code:[0-9a-f]{64}$/.test(codeKey));
+          const stored = authorizationCodeStateSchema.parse(
+            JSON.parse((await redis.get(codeKey))!),
+          );
+          assert.equal(stored.userId, userId);
+          codeKeys.add(codeKey);
+          checkedKeys = codeKeys.size;
+          assert.equal(stored.clientId, student.client_id);
+          assert.equal(stored.authTime, stateBefore.authTime);
+          assert.deepEqual(stored.grantedScopes, [
+            'openid',
+            'profile',
+            'email',
+          ]);
+          assert.equal(stored.redirectUri, student.redirect_uri);
+          assert.equal(stored.codeChallenge, student.code_challenge);
+          assert.equal(stored.nonce, student.nonce);
+          assert.ok(
+            (await redis.ttl(codeKey)) > 0 && (await redis.ttl(codeKey)) <= 120,
+          );
+        }
         assert.deepEqual(
           await prisma.session.findUniqueOrThrow({ where: { id } }),
           persistentBefore,
@@ -528,6 +695,19 @@ async function checkAuthorizationRequests(): Promise<void> {
           );
           // Existing M5.1-M5.3 matrix now also runs with a genuine central session.
           await checkCanonicalHttp(targetOrigin, cookie(id));
+          await checkHttp(
+            targetOrigin,
+            {
+              response_type: 'code',
+              client_id: 'banking-web',
+              redirect_uri: demos[1].redirectUri,
+              scope: 'profile',
+              state: student.state,
+            },
+            204,
+            invalid,
+            cookie(id),
+          );
           const untouched = await redis.get(key(id));
           const touchCount = touches;
           await checkHttp(
@@ -572,6 +752,67 @@ async function checkAuthorizationRequests(): Promise<void> {
             cookie(id),
           );
           prismaFault = false;
+          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          const firstCode = issued.at(-1)!.code;
+          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          assert.ok(firstCode !== issued.at(-1)!.code);
+          // Occupy the first random candidate at the storage seam, then use
+          // the real NX primitive. The collided value must remain untouched.
+          collisionsRemaining = 1;
+          expectedAttempts = 2;
+          const attemptsBeforeCollision = attempts.length;
+          await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
+          assert.equal(attempts.length, attemptsBeforeCollision + 2);
+          assert.ok(attempts.at(-1) !== attempts.at(-2));
+          expectedAttempts = 1;
+          collisionsRemaining = 3;
+          reservationFailure = true;
+          const attemptsBeforeExhaustion = attempts.length;
+          await checkHttp(
+            targetOrigin,
+            student,
+            500,
+            {
+              error: 'server_error',
+              error_description: 'Authorization request failed.',
+            },
+            cookie(id),
+          );
+          assert.equal(attempts.length, attemptsBeforeExhaustion + 3);
+          reservationFailure = false;
+          for (const [codeKey, sentinel] of collisionEntries)
+            assert.ok((await redis.get(codeKey)) === sentinel);
+          // Isolate a real disconnected Redis client at the code-write boundary:
+          // session authentication still uses the healthy shared Redis client.
+          unavailableRedis = new RedisService(probeConfig);
+          unavailableRedis.onModuleInit();
+          const codeRedisDeadline = Date.now() + 10000;
+          for (;;) {
+            try {
+              await unavailableRedis.ttl(rateKey);
+              break;
+            } catch {
+              if (Date.now() >= codeRedisDeadline)
+                throw new Error('Code Redis readiness timeout.');
+              await setTimeout(50);
+            }
+          }
+          await unavailableRedis.onModuleDestroy();
+          codeFault = true;
+          const failedAttempt = attempts.length;
+          await checkHttp(
+            targetOrigin,
+            student,
+            500,
+            {
+              error: 'server_error',
+              error_description: 'Authorization request failed.',
+            },
+            cookie(id),
+          );
+          assert.equal(attempts.length, failedAttempt + 1);
+          assert.equal(await redis.get(attempts.at(-1)!), null);
+          codeFault = false;
           await checkHttp(targetOrigin, student, 204, invalid, cookie(id));
         }
         const logout = await fetch(new URL('/auth/logout', targetOrigin), {
@@ -704,12 +945,37 @@ async function checkAuthorizationRequests(): Promise<void> {
       );
       assert.equal(capturedLogs, 0);
     } finally {
+      verifyCodeWrite = undefined;
       redisFault = false;
       prismaFault = false;
       try {
-        await app?.close();
+        try {
+          await app?.close();
+        } finally {
+          await unavailableRedis?.onModuleDestroy();
+        }
       } finally {
         if (createdUser) {
+          // Recover even a code whose HTTP response/Redis reply was lost. This is
+          // the existing bounded local snapshot convention, not runtime scanning.
+          for (const [redisKey] of await redisSnapshot()) {
+            if (!/^oauth:code:[0-9a-f]{64}$/.test(redisKey)) continue;
+            const value = await redis.get(redisKey);
+            if (value === null) continue;
+            try {
+              const stored = authorizationCodeStateSchema.safeParse(
+                JSON.parse(value),
+              );
+              if (stored.success && stored.data.userId === userId)
+                codeKeys.add(redisKey);
+            } catch {
+              /* Unrelated/collision values are never adopted by content. */
+            }
+          }
+          for (const codeKey of codeKeys) {
+            await redis.del(codeKey);
+            assert.equal(await redis.get(codeKey), null);
+          }
           const owned = await prisma.session.findMany({
             where: { userId },
             select: { id: true },
@@ -811,7 +1077,7 @@ async function checkAuthorizationRequests(): Promise<void> {
     assert.deepEqual(await redisSnapshot(), redisBefore);
     Object.assign(console, originals);
     console.log(
-      'M5.1-M5.4 real PostgreSQL/HTTP passed: OAuth validation precedes session authentication; fixed 400/401/500, authenticated 204, no Location or new Set-Cookie.',
+      'M5.1-M5.5 real PostgreSQL/Redis/HTTP passed: OAuth validation and session authentication precede code issuance; fixed 400/401/500, authenticated 204, no code body, Location or new Set-Cookie.',
     );
     console.log(
       'Read-only validation/counters/disabled fixture rollback passed; authorization performs no PostgreSQL writes; login/session fixtures cleaned; full-row fingerprints and canonical registry unchanged.',
@@ -820,7 +1086,7 @@ async function checkAuthorizationRequests(): Promise<void> {
       'Real login -> cookie -> same authorization request -> logout passed on temporary and Compose apps; Redis idle touch/absolute cap, coherence and controlled Redis/Prisma faults passed; temporary server/clients closed.',
     );
     console.log(
-      `M5.1-M5.4 passed ${verifiedHttpCases} real HTTP authorization cases; PKCE/scope regressions preserved; no code/token/continuation state; Redis snapshot restored unchanged.`,
+      `M5.1-M5.5 passed ${verifiedHttpCases} real HTTP authorization cases; exact hash-only code state/120-second TTL/independent codes/NX collision retry and exhaustion/disconnected code Redis failure passed; all probe-owned code keys cleaned; no token/redirect/consume; Redis snapshot restored unchanged.`,
     );
   } finally {
     Object.assign(console, originals);

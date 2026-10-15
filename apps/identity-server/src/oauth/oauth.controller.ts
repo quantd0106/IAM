@@ -51,7 +51,7 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    // Interim authenticated continuation: discard transient request/grants/subject.
+    // Code has been persisted by hash; discard the transient raw code until M5.6.
     // No redirect, cookie, session, authorization code or token response.
   }
 }

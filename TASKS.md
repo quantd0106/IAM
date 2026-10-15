@@ -596,7 +596,7 @@ Acceptance criteria:
 
 ## M5.5 — Authorization-code generation/storage
 
-Status: [ ]
+Status: [x]
 
 Redis:
 

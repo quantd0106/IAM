@@ -5,11 +5,17 @@ import {
 } from './authorization-request.service.js';
 import { IdpSessionAuthenticationService } from '../session/idp-session-authentication.service.js';
 import { AuthorizationService } from './authorization.service.js';
+import { AuthorizationCodeService } from './authorization-code.service.js';
 
-describe('AuthorizationService M5.4 ordering and trusted transient subject', () => {
+describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
   const validate = vi.fn<AuthorizationRequestService['validate']>();
   const authenticate = vi.fn<IdpSessionAuthenticationService['authenticate']>();
-  const service = new AuthorizationService({ validate }, { authenticate });
+  const issue = vi.fn<AuthorizationCodeService['issue']>();
+  const service = new AuthorizationService(
+    { validate },
+    { authenticate },
+    { issue },
+  );
   const validated: Extract<AuthorizationRequestResult, { ok: true }> = {
     ok: true,
     client: {
@@ -41,6 +47,7 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
   beforeEach(() => {
     vi.resetAllMocks();
     validate.mockResolvedValue(validated);
+    issue.mockResolvedValue({ code: 'transient-test-code' });
     authenticate.mockResolvedValue({
       sessionId: 'trusted-session',
       userId: state.userId,
@@ -58,6 +65,7 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
     };
     expect(await service.authorize(query, 'configured-cookie')).toEqual({
       ...validated,
+      authorizationCode: 'transient-test-code',
       session: {
         sessionId: 'trusted-session',
         userId: 'trusted-user',
@@ -70,6 +78,18 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
     expect(validate.mock.invocationCallOrder[0]).toBeLessThan(
       authenticate.mock.invocationCallOrder[0],
     );
+    expect(authenticate.mock.invocationCallOrder[0]).toBeLessThan(
+      issue.mock.invocationCallOrder[0],
+    );
+    expect(issue).toHaveBeenCalledExactlyOnceWith({
+      clientId: 'student-spa',
+      userId: 'trusted-user',
+      redirectUri: validated.request.redirect_uri,
+      grantedScopes: validated.grantedScopes,
+      codeChallenge: null,
+      nonce: null,
+      authTime: 1,
+    });
   });
   it.each([
     'invalid_request',
@@ -79,6 +99,7 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
     validate.mockResolvedValue({ ok: false, error });
     expect(await service.authorize({}, 'cookie')).toEqual({ ok: false, error });
     expect(authenticate).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
   });
   it('does not touch after an operational OAuth failure', async () => {
     validate.mockRejectedValue(new Error('private driver cause'));
@@ -86,6 +107,7 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
       new Error('Authorization request failed.'),
     );
     expect(authenticate).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
   });
   it('returns authentication_required for a valid request without a central session', async () => {
     authenticate.mockResolvedValue(null);
@@ -93,6 +115,7 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
       ok: false,
       error: 'authentication_required',
     });
+    expect(issue).not.toHaveBeenCalled();
   });
   it('keeps session infrastructure failures separate from unauthenticated results', async () => {
     authenticate.mockRejectedValue(
@@ -106,5 +129,42 @@ describe('AuthorizationService M5.4 ordering and trusted transient subject', () 
     expect(error).toEqual(new Error('Authorization request failed.'));
     expect(error).not.toHaveProperty('cause');
     expect((error as Error).stack).not.toContain('private');
+    expect(issue).not.toHaveBeenCalled();
+  });
+  it('preserves validated grants/PKCE/nonce and trusted authTime without copying state/sessionId', async () => {
+    const request = {
+      ...validated.request,
+      client_id: 'untrusted-re-read',
+      nonce: 'opaque',
+      code_challenge: 'A'.repeat(43),
+    };
+    validate.mockResolvedValue({
+      ...validated,
+      request,
+      grantedScopes: ['profile', 'openid', 'email'],
+    });
+    await service.authorize({ userId: 'attacker', authTime: 999 }, 'cookie');
+    expect(issue).toHaveBeenCalledExactlyOnceWith({
+      clientId: validated.client.clientId,
+      userId: 'trusted-user',
+      redirectUri: request.redirect_uri,
+      grantedScopes: ['profile', 'openid', 'email'],
+      codeChallenge: request.code_challenge,
+      nonce: request.nonce,
+      authTime: 1,
+    });
+  });
+  it('sanitizes code persistence failure and never returns a partial success', async () => {
+    issue.mockRejectedValue(
+      new Error('private code/hash/key/state', {
+        cause: new Error('private driver cause'),
+      }),
+    );
+    const failure: unknown = await service
+      .authorize({}, 'cookie')
+      .catch((error: unknown) => error);
+    expect(failure).toEqual(new Error('Authorization request failed.'));
+    expect(failure).not.toHaveProperty('cause');
+    expect(issue).toHaveBeenCalledOnce();
   });
 });

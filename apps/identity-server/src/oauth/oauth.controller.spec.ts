@@ -7,6 +7,8 @@ import { IdpSessionStateService } from '../session/idp-session-state.service.js'
 import type { IdpSessionState } from '../session/idp-session-state.js';
 import { SessionAuthenticationModule } from '../session/session-authentication.module.js';
 import { AuthorizationService } from './authorization.service.js';
+import { AuthorizationCodeService } from './authorization-code.service.js';
+import { RedisModule } from '../redis/redis.module.js';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import {
@@ -122,10 +124,12 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   let allowedNames: Map<string, string[]>;
   let app: INestApplication<Server>;
   const touch = vi.fn<IdpSessionStateService['touch']>();
+  const reserve = vi.fn<RedisService['setIfAbsentWithTtl']>();
   const findSession =
     vi.fn<() => Promise<ReturnType<typeof currentRow> | null>>();
   let persistent: ReturnType<typeof currentRow>;
   let logs: MockInstance[];
+  let codeWriteFailure = false;
   beforeAll(async () => {
     const module = await Test.createTestingModule({ imports: [OAuthModule] })
       .overrideProvider(PrismaService)
@@ -144,7 +148,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
       .overrideProvider(RedisService)
-      .useValue({})
+      .useValue({ setIfAbsentWithTtl: reserve })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch })
       .useMocker((token) =>
@@ -163,6 +167,8 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
   });
   beforeEach(() => {
     vi.resetAllMocks();
+    reserve.mockResolvedValue(true);
+    codeWriteFailure = false;
     clients = structuredClone(rows);
     persistent = currentRow();
     findSession.mockImplementation(() => Promise.resolve(persistent));
@@ -236,12 +242,19 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     cookie: string | undefined = currentCookie,
   ) {
     const touchesBefore = touch.mock.calls.length;
+    const reservationsBefore = reserve.mock.calls.length;
     const operation = request(app.getHttpServer())
       .get('/oauth/authorize')
       .query(query);
     if (cookie !== undefined) operation.set('Cookie', cookie);
     const response = await operation.expect(status);
     if (status === 400) expect(touch.mock.calls.length).toBe(touchesBefore);
+    if (status === 400 || status === 401)
+      expect(reserve.mock.calls.length).toBe(reservationsBefore);
+    if (status === 500 && !codeWriteFailure)
+      expect(reserve.mock.calls.length).toBe(reservationsBefore);
+    if (status === 204)
+      expect(reserve.mock.calls.length).toBe(reservationsBefore + 1);
     expect(response.headers.location).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
     expect(response.headers['cache-control']).toBe('no-store');
@@ -264,6 +277,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     expect(Reflect.getMetadata('imports', OAuthModule) as unknown).toEqual([
       ClientRegistryModule,
       SessionAuthenticationModule,
+      RedisModule,
     ]);
     expect(Reflect.getMetadata('controllers', OAuthModule) as unknown).toEqual([
       OAuthController,
@@ -271,6 +285,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     expect(Reflect.getMetadata('providers', OAuthModule) as unknown).toEqual([
       AuthorizationRequestService,
       AuthorizationService,
+      AuthorizationCodeService,
     ]);
     expect(
       Reflect.getMetadata('__module:global__', OAuthModule) as unknown,
@@ -280,7 +295,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       'scopes',
     ]);
   });
-  it('returns interim empty 204 for Student SPA S256, never a code/token/redirect/cookie', async () => {
+  it('persists exactly one code after authentication but returns empty 204, never code/token/redirect/cookie', async () => {
     await call(valid, 204);
     expect(findUnique).toHaveBeenCalledOnce();
     expect(findUnique.mock.calls[0][0].where).toEqual({
@@ -290,6 +305,22 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       where: { clientId: rows[0].id },
       select: { scope: { select: { name: true } } },
     });
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(findSession.mock.invocationCallOrder[0]).toBeLessThan(
+      reserve.mock.invocationCallOrder[0],
+    );
+    const stored: unknown = JSON.parse(reserve.mock.calls[0][1]);
+    expect(stored).toEqual({
+      clientId: valid.client_id,
+      userId: currentUser,
+      redirectUri: valid.redirect_uri,
+      grantedScopes: ['openid', 'profile', 'email'],
+      codeChallenge: valid.code_challenge,
+      nonce: valid.nonce,
+      authTime: persistent.createdAt.getTime(),
+      expiresAt: expect.any(Number) as unknown,
+    });
+    expect(reserve.mock.calls[0][2]).toBe(120);
   });
   it.each(['banking-web', 'admin-portal'])(
     'accepts exact %s registration without requiring PKCE',
@@ -706,6 +737,30 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       error: 'server_error',
       error_description: 'Authorization request failed.',
     });
+  });
+  it('maps code Redis failure to the identical fixed 500, without raw code/key/state leakage', async () => {
+    codeWriteFailure = true;
+    reserve.mockImplementation((key, value) =>
+      Promise.reject(
+        new Error(`private driver cause ${key} ${value}`, {
+          cause: new Error('private cause'),
+        }),
+      ),
+    );
+    await call(valid, 500, {
+      error: 'server_error',
+      error_description: 'Authorization request failed.',
+    });
+    expect(reserve).toHaveBeenCalledOnce();
+  });
+  it('fails closed on bounded collision exhaustion, without a success HTTP response', async () => {
+    codeWriteFailure = true;
+    reserve.mockResolvedValue(false);
+    await call(valid, 500, {
+      error: 'server_error',
+      error_description: 'Authorization request failed.',
+    });
+    expect(reserve).toHaveBeenCalledTimes(3);
   });
   it('sanitizes unexpected validation failures without reflecting the query', async () => {
     vi.spyOn(

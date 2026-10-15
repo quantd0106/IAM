@@ -4,10 +4,16 @@ import { AuthorizationRequestService } from './authorization-request.service.js'
 import { OAuthController } from './oauth.controller.js';
 import { SessionAuthenticationModule } from '../session/session-authentication.module.js';
 import { AuthorizationService } from './authorization.service.js';
+import { AuthorizationCodeService } from './authorization-code.service.js';
+import { RedisModule } from '../redis/redis.module.js';
 
 @Module({
-  imports: [ClientRegistryModule, SessionAuthenticationModule],
+  imports: [ClientRegistryModule, SessionAuthenticationModule, RedisModule],
   controllers: [OAuthController],
-  providers: [AuthorizationRequestService, AuthorizationService],
+  providers: [
+    AuthorizationRequestService,
+    AuthorizationService,
+    AuthorizationCodeService,
+  ],
 })
 export class OAuthModule {}
