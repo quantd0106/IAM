@@ -610,6 +610,11 @@ Kiểm tra PostgreSQL local explicit: `pnpm --filter identity-server seed:check`
 probe chạy seed hai lần trong transaction rồi rollback, giữ nguyên dữ liệu có trước.
 Seed luôn explicit, không tự chạy khi install, build, start, migrations hoặc Compose startup.
 
+Kiểm tra lookup read-only trên dataset đã seed:
+`pnpm --filter identity-server client-lookup:check`. Probe kiểm tra ba clients/scopes
+qua module nội bộ, không mở HTTP server; fixture và disabled-state thử nghiệm đều
+rollback, không đổi canonical seed data. Không có OAuth endpoint mới.
+
 ## 21. Local registration API
 
 `POST /auth/register` nhận JSON `{email, username, password}` và trả HTTP 201

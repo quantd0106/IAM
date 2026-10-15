@@ -154,6 +154,35 @@ work, not a seed rerun. Seed failure exposes only sanitized errors. Seeding is
 explicit, never startup/install/migration behavior; it adds no runtime lookup,
 OAuth authentication, endpoint, schema or migration.
 
+### M4.6 internal read-only lookup
+
+ClientRegistryModule exports ClientLookupService and ScopeLookupService alongside
+the unchanged ClientSecretService; it remains non-global and imports only
+PrismaModule. Both lookup services use injected PostgreSQL/Prisma delegates with
+no writes, Redis, cache or logging.
+
+`ClientLookupService.requireEnabledClient(clientId): Promise<EnabledClient>`
+looks up the unique exact OAuth `client_id`, not internal UUID, without trimming,
+case conversion, Unicode normalization, aliases, patterns or fallback queries.
+Unknown and disabled clients both throw `Client unavailable.`; database failures
+throw `Client lookup failed.` without identifiers, SQL or attached driver causes.
+EnabledClient contains only id, clientId, name, clientType, accessTokenTtl,
+refreshTokenTtl and registered redirectUris (exact strings, code-unit sorted).
+No secret hash is selected/read/exposed. This is not client authentication or
+redirect URI validation; future M5 validation consumes these registrations.
+
+`ScopeLookupService.getAllowedScopeNames(clientRecordId): Promise<string[]>`
+accepts internal Client.id using the existing UUID convention (`z.uuid()`),
+querying ClientScope -> Scope and selecting names only. Malformed UUID fails
+before querying with `Invalid client record identifier.`; database failures use
+`Scope lookup failed.` without private causes. Return unique exact names in
+JavaScript code-unit order, without normalization, default scopes, permission
+mapping or requested/allowed intersection. No assignments (including unknown
+valid UUID) yields []. The normal caller first resolves an enabled client; this
+capability does not repeat enabled validation or make the two reads atomic.
+OAuth error mapping/authorization policy remain M5+ work, not internal lookup
+errors or new HTTP endpoints.
+
 ---
 
 ## 4. OAuth / OIDC Endpoints

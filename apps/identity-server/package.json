@@ -18,6 +18,7 @@
     "client-redirect-uri:check": "tsx prisma/client-redirect-uri.check.ts",
     "scope:check": "tsx prisma/scope.check.ts",
     "client-secret:check": "node --env-file-if-exists=.env dist/client-registry/client-secret.check.js",
+    "client-lookup:check": "tsx prisma/client-lookup.check.ts",
     "seed": "pnpm prisma:generate && prisma db seed",
     "seed:check": "tsx prisma/seed.check.ts",
     "redis:check": "node --env-file-if-exists=.env dist/redis/redis.check.js",

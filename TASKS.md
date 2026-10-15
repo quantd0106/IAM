@@ -525,7 +525,7 @@ banking.transactions.read
 
 ## M4.6 — Client/scope lookup services
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
