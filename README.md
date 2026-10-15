@@ -598,10 +598,16 @@ pnpm --filter identity-server seed
 
 Lệnh tự generate Prisma Client rồi gọi `prisma db seed`, dùng `tsx prisma/seed.ts`.
 CLI chỉ cần database configuration, không bootstrap NestJS hoặc yêu cầu Redis/JWT/TOTP.
-M1.8 chỉ cung cấp infrastructure: kết nối thật, chạy `SELECT 1`, đóng connection
-và báo `Seed completed: 0 datasets applied.`; dataset hiện tại cố ý để trống.
-Chạy hai lần an toàn/idempotent, không ghi domain data hoặc thay đổi schema.
-Domain/demo seed data sẽ được thêm bởi các task sau khi models tương ứng tồn tại.
+Seed kết nối thật, chạy `SELECT 1`, áp dụng atomic một demo-registry dataset rồi
+đóng connection và báo `Seed completed: 1 datasets applied.` (kể cả rerun không đổi).
+Dataset gồm ba demo clients, bốn scopes và exact redirect/allowed-scope mappings
+trong `IMPLEMENTATION_SPEC.md` mục 3. Seed lại không tạo duplicates hoặc rotate
+confidential secrets đã provision; giữ nguyên unrelated clients/scopes và TTL hiện có.
+Student SPA không có secret. Confidential secrets chỉ được provision khi hash NULL
+qua ClientSecretService; plaintext return bị bỏ ngay, không hiển thị/log/lưu và
+không thể lấy lại bằng seed. Chưa có operator delivery channel.
+Kiểm tra PostgreSQL local explicit: `pnpm --filter identity-server seed:check`;
+probe chạy seed hai lần trong transaction rồi rollback, giữ nguyên dữ liệu có trước.
 Seed luôn explicit, không tự chạy khi install, build, start, migrations hoặc Compose startup.
 
 ## 21. Local registration API

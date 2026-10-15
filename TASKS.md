@@ -509,7 +509,7 @@ Acceptance criteria:
 
 ## M4.5 — Seed demo clients/scopes
 
-Status: [ ]
+Status: [x]
 
 Seed:
 

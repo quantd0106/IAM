@@ -16,15 +16,21 @@ export default defineConfig(
     extends: [js.configs.recommended, tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: ['prisma.config.ts', 'prisma/*.ts'],
-          defaultProject: 'tsconfig.prisma.json',
-        },
+        projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
     },
     linterOptions: {
       reportUnusedDisableDirectives: 'error',
+    },
+  },
+  {
+    files: ['prisma.config.ts', 'prisma/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+        project: './tsconfig.prisma.json',
+      },
     },
   },
   prettier,

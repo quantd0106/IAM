@@ -10,7 +10,10 @@ export type IssuedClientSecret = { clientSecret: string };
 
 @Injectable()
 export class ClientSecretService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService)
+    private readonly prisma: Pick<PrismaService, 'client'>,
+  ) {}
 
   /**
    * Internal capability: the caller must authorize issuance/rotation beforehand.

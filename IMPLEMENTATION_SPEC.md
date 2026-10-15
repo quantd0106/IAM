@@ -125,6 +125,35 @@ redirect_uri: http://localhost:3300/auth/callback
 
 Redirect URIs are matched **exactly**. No wildcard redirect URIs in MVP.
 
+### M4.5 explicit demo seed
+
+The existing `pnpm --filter identity-server seed` command applies one logical
+demo-registry dataset per successful invocation (also 1 on an unchanged rerun):
+
+| client_id | name | type | exact redirect URI | allowed scopes |
+| --- | --- | --- | --- | --- |
+| student-spa | Student SPA | PUBLIC | http://localhost:3200/callback | openid, profile, email |
+| banking-web | Banking Web / BFF | CONFIDENTIAL | http://localhost:3100/auth/callback | openid, profile, email, banking.transactions.read |
+| admin-portal | Admin Portal / BFF | CONFIDENTIAL | http://localhost:3300/auth/callback | openid, profile, email |
+
+All three are enabled. Upsert exact identifiers and the four scope names above
+without normalization. Creation uses existing UUID/TTL defaults; preserve existing
+TTLs and IDs. Converge canonical name/type/enabled and each canonical client's
+exact redirect/allowed-scope set, removing only extra registrations belonging to
+those three clients. Never delete unrelated clients/scopes or change unrelated
+registrations. Student SPA's hash is always NULL.
+
+Connect, check `SELECT 1`, then apply the complete registry in one PostgreSQL
+transaction and disconnect. Provision only NULL confidential hashes through the
+existing M4.4 ClientSecretService on that same transaction, preserving CAS and
+rollback on failure. Already provisioned hashes never rotate on seed reruns.
+There is no safe operator delivery channel yet: discard the service's one-time
+plaintext return immediately, without logging, output, retention or plaintext
+persistence. It is not recoverable; later authorized rotation/delivery is separate
+work, not a seed rerun. Seed failure exposes only sanitized errors. Seeding is
+explicit, never startup/install/migration behavior; it adds no runtime lookup,
+OAuth authentication, endpoint, schema or migration.
+
 ---
 
 ## 4. OAuth / OIDC Endpoints
