@@ -239,8 +239,9 @@ state, granted scopes or persistence writes are performed.
 
 One Zod boundary accepts framework-decoded scalar strings only. Base fields
 response_type, client_id, redirect_uri, scope and state are required/non-empty;
-known optional strings are non-empty when present. Unknown parameters are
-ignored, not aliased. Repeated recognized parameters (arrays) and object values
+nonce is non-empty when present. PKCE pair/method/format checks follow resolved
+client policy in section 6. Unknown parameters are ignored, not aliased.
+Repeated recognized parameters (arrays) and object values
 are rejected. No trimming, case conversion, Unicode normalization or additional
 URL decoding/re-encoding occurs. Only response_type=code is supported.
 
@@ -256,17 +257,15 @@ supplied redirect_uri to its exact registered strings using membership, without
 patterns, URL parsing/canonicalization or redirect fallback. Unknown/disabled
 clients and all invalid/unregistered redirects receive the same direct HTTP 400
 JSON `{error: "invalid_request", error_description: "Invalid authorization request."}`.
-Other shape/nonce/minimal PKCE failures use that same response. A well-shaped
+Other shape/nonce/PKCE failures use that same response. A well-shaped
 unsupported response_type receives HTTP 400 unsupported_response_type with the
 same description. Lookup operational/unexpected failures receive fixed HTTP 500
 `{error: "server_error", error_description: "Authorization request failed."}`.
 No query values, internal UUID, private cause or driver detail are returned/logged.
 
-PUBLIC clients require non-empty opaque code_challenge and exact S256 method.
-CONFIDENTIAL clients may omit PKCE; any supplied challenge requires S256, and
-plain/other methods are rejected. No challenge alphabet/length/entropy checks,
-code_verifier, SHA-256 verification or PKCE persistence is added. M5.2 remains a
-separate hardening/policy task; M5.3 owns allowed/granted scopes and invalid_scope.
+M5.2 finalizes the authorization-request PKCE policy in section 6 below, replacing
+M5.1's minimum presence/method checks without changing the interim HTTP behavior.
+M5.3 still owns allowed/granted scopes and invalid_scope.
 
 Authorization code policy:
 
@@ -308,6 +307,30 @@ Rejected:
 ```text
 plain
 ```
+
+M5.2 uses a pure authorization-request policy after enabled client resolution and
+exact redirect validation. The Zod query boundary checks scalar string shape for
+code_challenge/code_challenge_method only, without coercion; all PKCE pair,
+method and challenge-format decisions belong to the policy, not duplicate schema
+refinements.
+
+PUBLIC clients (including student-spa) require BOTH code_challenge and
+code_challenge_method. CONFIDENTIAL clients (banking-web/admin-portal) may omit
+BOTH; if either field is supplied, BOTH are required. A supplied method must be
+exactly S256, case-sensitive, without a plain fallback.
+
+For either client type, a supplied challenge must be exactly 43 ASCII characters
+from A-Z, a-z, 0-9, hyphen and underscore. Reject padding (=), +, /, dot, tilde,
+whitespace, controls, Unicode, other lengths and percent signs in the
+framework-decoded value. Preserve the exact input string; never trim,
+normalize, decode again, pad or
+repair it. All PKCE failures return the existing direct HTTP 400 invalid_request
+JSON with fixed description, no Location/Set-Cookie or query/challenge logging.
+
+This authorization boundary validates received challenge syntax only: no hashing,
+code_verifier handling, verifier comparison, persistence, session integration,
+authorization code or token is introduced. Actual S256 calculation/verification
+belongs to M6.3 at the token endpoint, not M5.2.
 
 Calculation:
 

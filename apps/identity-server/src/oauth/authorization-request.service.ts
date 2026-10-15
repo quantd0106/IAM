@@ -7,6 +7,7 @@ import {
   authorizationRequestSchema,
   type AuthorizationRequest,
 } from './authorization-request.schema.js';
+import { validateAuthorizationPkce } from './authorization-pkce.policy.js';
 
 export type AuthorizationRequestResult =
   | {
@@ -43,11 +44,12 @@ export class AuthorizationRequestService {
     if (client === null) throw new Error('Authorization request failed.');
     if (!client.redirectUris.includes(request.redirect_uri))
       return { ok: false, error: 'invalid_request' };
-    // M5.1 minimum presence/method only; no challenge format/entropy/verifier work.
     if (
-      client.clientType === 'PUBLIC' &&
-      (request.code_challenge === undefined ||
-        request.code_challenge_method !== 'S256')
+      !validateAuthorizationPkce(
+        client.clientType,
+        request.code_challenge,
+        request.code_challenge_method,
+      )
     )
       return { ok: false, error: 'invalid_request' };
     return { ok: true, client, request: { ...request, response_type: 'code' } };

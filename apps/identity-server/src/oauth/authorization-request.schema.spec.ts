@@ -8,7 +8,7 @@ const valid = {
   scope: 'openid profile email',
   state: ' opaque state e\u0301 ',
   nonce: ' opaque nonce \u00e9 ',
-  code_challenge: 'opaque challenge',
+  code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
   code_challenge_method: 'S256',
 };
 describe('authorizationRequestSchema', () => {
@@ -131,32 +131,43 @@ describe('authorizationRequestSchema', () => {
       authorizationRequestSchema.safeParse({ ...input, scope }).success,
     ).toBe(true);
   });
-  it('treats whitespace state/nonce/challenge as opaque non-empty strings, not hardened PKCE values', () => {
-    const input = { ...valid, state: ' ', nonce: ' ', code_challenge: ' ' };
+  it('preserves whitespace state/nonce without changing their opaque M5.1 semantics', () => {
+    const input = { ...valid, state: ' ', nonce: ' ' };
     expect(authorizationRequestSchema.parse(input)).toEqual({
       ...input,
       scope: ['openid', 'profile', 'email'],
     });
   });
   it.each(['plain', 's256', ' S256', 'S256 ', '', 'other'])(
-    'accepts only exact S256 when a method is provided (%#)',
+    'preserves scalar PKCE method for the resolved-client policy without normalization (%#)',
     (method) => {
       expect(
         authorizationRequestSchema.safeParse({
           ...valid,
           code_challenge_method: method,
         }).success,
-      ).toBe(false);
+      ).toBe(true);
+      expect(
+        authorizationRequestSchema.parse({
+          ...valid,
+          code_challenge_method: method,
+        }).code_challenge_method,
+      ).toBe(method);
     },
   );
-  it('requires S256 alongside a supplied challenge, but permits absent optional PKCE', () => {
+  it('leaves pair/format decisions to the PKCE policy after client resolution', () => {
     const withoutMethod = { ...valid, code_challenge_method: undefined };
     expect(authorizationRequestSchema.safeParse(withoutMethod).success).toBe(
-      false,
+      true,
     );
     const withoutBoth = { ...withoutMethod, code_challenge: undefined };
     expect(authorizationRequestSchema.safeParse(withoutBoth).success).toBe(
       true,
     );
+    for (const code_challenge of ['', 'x', ' ', `${valid.code_challenge}=`])
+      expect(
+        authorizationRequestSchema.parse({ ...valid, code_challenge })
+          .code_challenge,
+      ).toBe(code_challenge);
   });
 });

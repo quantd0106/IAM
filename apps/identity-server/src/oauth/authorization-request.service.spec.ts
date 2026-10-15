@@ -21,7 +21,7 @@ const query = {
   scope: 'openid profile email',
   state: 'opaque state',
   nonce: 'opaque nonce',
-  code_challenge: 'opaque challenge',
+  code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
   code_challenge_method: 'S256',
 };
 describe('AuthorizationRequestService', () => {
@@ -200,6 +200,42 @@ describe('AuthorizationRequestService', () => {
     expect(
       (await service.validate({ ...query, code_challenge_method: 'plain' })).ok,
     ).toBe(false);
+  });
+  it.each(['PUBLIC', 'CONFIDENTIAL'] as const)(
+    'enforces PKCE policy after enabled %s client resolution',
+    async (clientType) => {
+      client.clientType = clientType;
+      for (const variation of [
+        { code_challenge: undefined },
+        { code_challenge_method: undefined },
+        { code_challenge_method: 'plain' },
+        { code_challenge_method: 's256' },
+        { code_challenge_method: ' S256' },
+        { code_challenge_method: 'S256 ' },
+        { code_challenge: '' },
+        { code_challenge: 'x' },
+        { code_challenge: 'A'.repeat(42) },
+        { code_challenge: 'A'.repeat(44) },
+        { code_challenge: `${'A'.repeat(42)}=` },
+        { code_challenge: `${'A'.repeat(42)}+` },
+        { code_challenge: `${'A'.repeat(42)}/` },
+        { code_challenge: `${'A'.repeat(42)}\n` },
+        { code_challenge: `${'A'.repeat(42)}\u00e9` },
+      ]) {
+        lookup.mockClear();
+        expect(await service.validate({ ...query, ...variation })).toEqual({
+          ok: false,
+          error: 'invalid_request',
+        });
+        expect(lookup).toHaveBeenCalledExactlyOnceWith(query.client_id);
+      }
+    },
+  );
+  it('does not run PKCE policy before the existing enabled-client lookup', async () => {
+    lookup.mockRejectedValue(new Error('Client lookup failed.'));
+    await expect(
+      service.validate({ ...query, code_challenge: 'x' }),
+    ).rejects.toThrow('Authorization request failed.');
   });
   it('accepts syntactically valid unregistered scopes without querying allowed scopes or granting them', async () => {
     const input = { ...query, nonce: undefined };

@@ -29,7 +29,7 @@ const valid = {
   scope: 'openid profile email',
   state: 'opaque-state-canary',
   nonce: 'opaque-nonce-canary',
-  code_challenge: 'opaque-challenge-canary',
+  code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
   code_challenge_method: 'S256',
 };
 const badRequest = {
@@ -318,14 +318,77 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     { code_challenge_method: 'plain' },
     { code_challenge_method: 's256' },
   ])(
-    'enforces only PUBLIC minimum challenge/method checks (%#)',
+    'enforces PUBLIC challenge/method presence and exact S256 (%#)',
     async (variation) => {
       await call({ ...valid, ...variation }, 400);
     },
   );
-  it('does not apply future PKCE challenge length/alphabet/verifier hardening', async () => {
-    await call({ ...valid, code_challenge: 'x' }, 204);
+  it('rejects the short challenge previously allowed by the minimal M5.1 boundary', async () => {
+    await call({ ...valid, code_challenge: 'x' }, 400);
   });
+  it.each(['banking-web', 'admin-portal'])(
+    'accepts complete S256 PKCE but rejects partial pairs for confidential %s',
+    async (id) => {
+      const client = clients.find((row) => row.clientId === id);
+      if (!client) throw new Error('Missing fixture.');
+      const query = {
+        ...valid,
+        client_id: id,
+        redirect_uri: client.redirectUris[0].redirectUri,
+      };
+      await call(query, 204);
+      await call({ ...query, code_challenge: undefined }, 400);
+      await call({ ...query, code_challenge_method: undefined }, 400);
+      await call({ ...query, code_challenge_method: 'plain' }, 400);
+    },
+  );
+  it.each(['student-spa', 'banking-web', 'admin-portal'])(
+    'rejects malformed PKCE for %s without repair, output/log leaks or side effects',
+    async (id) => {
+      const client = clients.find((row) => row.clientId === id);
+      if (!client) throw new Error('Missing fixture.');
+      const query = {
+        ...valid,
+        client_id: id,
+        redirect_uri: client.redirectUris[0].redirectUri,
+      };
+      for (const code_challenge of [
+        '',
+        'x',
+        'A'.repeat(42),
+        'A'.repeat(44),
+        `${valid.code_challenge}=`,
+        ...[
+          '=',
+          '+',
+          '/',
+          '.',
+          '~',
+          ' ',
+          '\t',
+          '\n',
+          '\r',
+          '\u2028',
+          '\u2029',
+          '\u0000',
+          '\u007f',
+          '\u00e9',
+        ].map((character) => `${'A'.repeat(42)}${character}`),
+        `${'A'.repeat(40)}%2D`,
+      ])
+        await call({ ...query, code_challenge }, 400);
+      for (const code_challenge_method of [
+        'plain',
+        's256',
+        ' S256',
+        'S256 ',
+        'S256\n',
+        '',
+        'unknown',
+      ])
+        await call({ ...query, code_challenge_method }, 400);
+    },
+  );
   it('ignores unrelated query values, incoming cookies and Bearer headers without authenticating/touching sessions', async () => {
     const response = await request(app.getHttpServer())
       .get('/oauth/authorize')

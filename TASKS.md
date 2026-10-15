@@ -562,7 +562,7 @@ Acceptance criteria:
 
 ## M5.2 — PKCE authorization-request policy
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

@@ -23,8 +23,9 @@ export const authorizationRequestSchema = z
     scope,
     state: opaque,
     nonce: opaque.optional(),
-    code_challenge: opaque.optional(),
-    code_challenge_method: z.literal('S256').optional(),
+    // Scalar shape only; the resolved-client PKCE policy owns pair/method/format.
+    code_challenge: z.string().optional(),
+    code_challenge_method: z.string().optional(),
   })
   .superRefine((input, context) => {
     if (input.scope.includes('openid') && input.nonce === undefined)
@@ -32,15 +33,6 @@ export const authorizationRequestSchema = z
         code: 'custom',
         path: ['nonce'],
         message: 'Required.',
-      });
-    if (
-      input.code_challenge !== undefined &&
-      input.code_challenge_method !== 'S256'
-    )
-      context.addIssue({
-        code: 'custom',
-        path: ['code_challenge_method'],
-        message: 'S256 required.',
       });
   });
 

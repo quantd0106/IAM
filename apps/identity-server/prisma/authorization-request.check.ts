@@ -7,6 +7,7 @@ import type { Server } from 'node:http';
 import type { INestApplication, LoggerService } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { createClient, RESP_TYPES } from 'redis';
 import { PrismaClient, type Prisma } from '../src/generated/prisma/client.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { OAuthModule } from '../src/oauth/oauth.module.js';
@@ -29,13 +30,14 @@ const student = {
   scope: 'openid profile email',
   state: 'm51-opaque-state',
   nonce: 'm51-opaque-nonce',
-  code_challenge: 'm51-opaque-challenge',
+  code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
   code_challenge_method: 'S256',
 };
 const invalid = {
   error: 'invalid_request',
   error_description: 'Invalid authorization request.',
 };
+let verifiedHttpCases = 0;
 type Snapshot = { relation: string; count: number; fingerprint: string }[];
 const snapshot = (
   db: Prisma.TransactionClient,
@@ -95,6 +97,7 @@ async function checkHttp(
   assert.equal(response.headers.get('cache-control'), 'no-store');
   if (status === 204) assert.equal(await response.text(), '');
   else assert.deepEqual(await response.json(), body);
+  verifiedHttpCases++;
 }
 async function checkCanonicalHttp(origin: string): Promise<void> {
   for (const demo of demos) {
@@ -147,23 +150,95 @@ async function checkCanonicalHttp(origin: string): Promise<void> {
     ...invalid,
     error: 'unsupported_response_type',
   });
+
+  // M5.2 extends, not replaces, every M5.1 regression above.
+  for (const demo of demos) {
+    const query: Record<string, string> = {
+      ...student,
+      client_id: demo.clientId,
+      redirect_uri: demo.redirectUri,
+    };
+    await checkHttp(origin, query, 204);
+    const challengeOnly = { ...query };
+    delete challengeOnly.code_challenge_method;
+    await checkHttp(origin, challengeOnly, 400);
+    const methodOnly = { ...query };
+    delete methodOnly.code_challenge;
+    await checkHttp(origin, methodOnly, 400);
+    for (const code_challenge_method of ['plain', 's256', ' S256', 'S256 '])
+      await checkHttp(origin, { ...query, code_challenge_method }, 400);
+    for (const code_challenge of [
+      '',
+      'x',
+      'A'.repeat(42),
+      'A'.repeat(44),
+      `${student.code_challenge}=`,
+      ...[
+        '=',
+        '+',
+        '/',
+        '.',
+        '~',
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        '\u2028',
+        '\u00e9',
+      ].map((character) => `${'A'.repeat(42)}${character}`),
+      `${'A'.repeat(40)}%2D`,
+    ])
+      await checkHttp(origin, { ...query, code_challenge }, 400);
+  }
 }
 
 async function checkAuthorizationRequests(): Promise<void> {
   const connectionString = process.env.DATABASE_URL?.trim();
+  const redisUrl = process.env.REDIS_URL?.trim();
   const origin = process.env.ISSUER_URL?.trim() || 'http://localhost:3000';
   if (
     !connectionString ||
+    !redisUrl ||
     !['development', 'test'].includes(process.env.NODE_ENV ?? 'development') ||
     !local(connectionString, ['postgresql:', 'postgres:']) ||
+    !local(redisUrl, ['redis:', 'rediss:']) ||
     !local(origin, ['http:', 'https:'])
   )
     throw new Error(
-      'Authorization probe requires local development PostgreSQL/HTTP.',
+      'Authorization probe requires local development PostgreSQL/Redis/HTTP.',
     );
   const prisma = new PrismaClient({
     adapter: new PrismaPg({ connectionString, connectionTimeoutMillis: 5000 }),
   });
+  // Read-only observer, never injected into OAuthModule or used by the endpoint.
+  const redis = createClient({
+    url: redisUrl,
+    disableOfflineQueue: true,
+    socket: { connectTimeout: 5000, reconnectStrategy: false },
+  });
+  redis.on('error', () => undefined);
+  const redisSnapshot = async (): Promise<[string, string][]> => {
+    const reader = redis.withCommandOptions({
+      abortSignal: AbortSignal.timeout(5000),
+    });
+    const binary = reader.withTypeMapping({ [RESP_TYPES.BLOB_STRING]: Buffer });
+    const entries = new Map<string, string>();
+    for await (const keys of reader.scanIterator({ COUNT: 100 })) {
+      for (const key of keys) {
+        assert.ok(
+          entries.size < 1000,
+          'Probe requires a bounded local Redis dataset.',
+        );
+        const value = await binary.dump(key);
+        assert.ok(Buffer.isBuffer(value));
+        entries.set(key, value.toString('hex'));
+      }
+    }
+    // Keep opaque keys/values in memory only, never print them.
+    return [...entries].sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    );
+  };
   let capturedLogs = 0;
   const capture = (): void => {
     capturedLogs++;
@@ -206,7 +281,9 @@ async function checkAuthorizationRequests(): Promise<void> {
   };
   try {
     await prisma.$connect();
+    await redis.connect();
     const before = await snapshot(prisma);
+    const redisBefore = await redisSnapshot();
     for (const method of ['log', 'info', 'error', 'warn', 'debug'] as const)
       console[method] = capture;
     await prisma.$transaction(
@@ -274,6 +351,7 @@ async function checkAuthorizationRequests(): Promise<void> {
     assert.ok(
       JSON.stringify(await snapshot(prisma)) === JSON.stringify(before),
     );
+    assert.deepEqual(await redisSnapshot(), redisBefore);
     Object.assign(console, originals);
     console.log(
       'M5.1 real PostgreSQL/HTTP passed: canonical 204, unknown/disabled rejected, exact URI/nonce/PUBLIC S256 checks, duplicate rejection, no Location or Set-Cookie, fixed OAuth errors.',
@@ -284,9 +362,16 @@ async function checkAuthorizationRequests(): Promise<void> {
     console.log(
       'Rebuilt application HTTP and /health passed; temporary HTTP servers closed; no session, code, token or grant behavior added.',
     );
+    console.log(
+      `M5.1/M5.2 passed ${verifiedHttpCases} real HTTP authorization cases; PUBLIC/CONFIDENTIAL complete/partial S256 and challenge format enforced; Redis key/value snapshot unchanged.`,
+    );
   } finally {
     Object.assign(console, originals);
-    await prisma.$disconnect();
+    try {
+      await prisma.$disconnect();
+    } finally {
+      if (redis.isOpen) redis.destroy();
+    }
   }
 }
 
