@@ -77,5 +77,18 @@ model Client {
   accessTokenTtl   Int        @default(600) @map("access_token_ttl")
   refreshTokenTtl  Int        @default(2592000) @map("refresh_token_ttl")
 
+  redirectUris ClientRedirectUri[]
+
   @@map("clients")
+}
+
+model ClientRedirectUri {
+  id          String @id @default(uuid()) @db.Uuid
+  clientId    String @map("client_id") @db.Uuid
+  redirectUri String @map("redirect_uri")
+
+  client Client @relation(fields: [clientId], references: [id])
+
+  @@unique([clientId, redirectUri])
+  @@map("client_redirect_uris")
 }

@@ -79,6 +79,20 @@ M4.4, redirect URIs to M4.2, scopes to M4.3, demo clients to M4.5, and
 lookup/disabled-client rejection logic to M4.6. The client classes below describe
 those future registrations, not seed data introduced by M4.1.
 
+M4.2 persistence baseline: `Client.redirectUris` represents zero, one or many
+`ClientRedirectUri` rows in `client_redirect_uris`. Each row has only a
+Prisma-generated UUID `id`, required UUID `client_id` referencing internal
+`Client.id` (not the OAuth client_id string), and required exact text
+`redirect_uri`. The composite `(client_id, redirect_uri)` is unique; different
+clients may register the same URI. Prisma's default FK behavior is ON DELETE
+RESTRICT / ON UPDATE CASCADE; no client-deletion lifecycle is introduced.
+
+Registry equality is exact only, without normalization or wildcard/pattern
+interpretation. URI values are opaque persistence strings in M4.2, with no new
+registration URI policy or custom CHECK constraints. No demo client/redirect
+rows, runtime lookup service or HTTP endpoint are added; runtime lookup and
+authorization-request validation belong to M4.6/M5.1 respectively.
+
 ### Student SPA
 
 ```text

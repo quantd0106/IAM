@@ -106,7 +106,8 @@ async function checkClients(): Promise<void> {
     >`
       SELECT contype::text AS kind, pg_get_constraintdef(oid) AS definition
       FROM pg_constraint
-      WHERE (conrelid = 'public.clients'::regclass OR confrelid = 'public.clients'::regclass)
+      -- Check Client-owned constraints; the incoming FK is verified by the M4.2 probe.
+      WHERE conrelid = 'public.clients'::regclass
         -- PostgreSQL 18 also lists NOT NULL constraints; checked via columns above.
         AND contype <> 'n'
     `;
@@ -138,7 +139,7 @@ async function checkClients(): Promise<void> {
     );
     assert.deepEqual(Object.values(ClientType), ['PUBLIC', 'CONFIDENTIAL']);
     console.log(
-      'Client exact columns/types/nullability/defaults/UUID PK/unique index/enum/no relations or CHECK policies passed.',
+      'Client exact columns/types/nullability/defaults/UUID PK/unique index/enum/no outgoing FK or CHECK policies passed.',
     );
 
     before = await snapshot();

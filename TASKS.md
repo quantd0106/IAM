@@ -479,7 +479,7 @@ refresh_token_ttl
 
 ## M4.2 — Client redirect URI model
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
