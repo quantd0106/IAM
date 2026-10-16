@@ -740,7 +740,7 @@ issue và state gốc, body rỗng, không Set-Cookie hoặc subject data.
 Idle activity/TTL có thể advance theo M3, không đổi absolute expiry hay PostgreSQL.
 Chưa có login UI/return_to/continuation state: gọi existing POST /auth/login rồi
 gửi lại ĐÚNG authorize request ban đầu với iam.sid để resume. Logout/revocation
-ngăn cookie đó tiếp tục authorize. M6.1 token request validation đã có; consume/token issuance chưa triển khai.
+ngăn cookie đó tiếp tục authorize. M6.1 validation và M6.2 atomic code consumption đã có; token issuance chưa triển khai.
 Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
 ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
 exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
@@ -771,7 +771,7 @@ userId/authTime lấy từ central session, PKCE/nonce vắng mặt hợp lệ d
 Expiry = một issue instant + 120000 ms; TTL cố định 120 giây. Collision không ghi đè,
 retry fresh code tối đa 3 lần, lỗi trả cùng safe 500. Raw code chỉ transient nội bộ,
 không nằm trong Redis/log/error/HTTP body; M5.6 chỉ đưa raw code vào validated
-Location. Chưa có consume/GETDEL hay verifier checking/token issuance.
+Location. M6.2 đã có consume/GETDEL; verifier checking/token issuance chưa triển khai.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
 Probe kiểm tra M5.1-M5.3 regressions trước session, login -> cookie -> same request
@@ -784,7 +784,7 @@ fragment và reserved/Unicode state bằng registry fixture riêng, không sửa
 chỉ xóa code/session keys thuộc probe. Disabled fixture rollback; snapshot DB/Redis
 được khôi phục sau probe, giữ nguyên seed và đóng servers/clients tạm.
 
-## 29. Token request boundary (M6.1)
+## 29. Token request boundary and consumption (M6.1–M6.2)
 
 `POST /oauth/token` chỉ nhận form `application/x-www-form-urlencoded` từ body:
 `grant_type`, `client_id`, `code`, `redirect_uri` là scalar string không rỗng;
@@ -793,12 +793,26 @@ reject unknown/repeated/structured fields; giữ nguyên decoded values, không 
 normalize hay decode lần hai. Chỉ exact `authorization_code` được chấp nhận.
 Shape/parser/media-type lỗi trả fixed 400 `invalid_request` / `Invalid token request.`;
 grant khác nhưng đúng shape trả fixed 400 `unsupported_grant_type` / `Unsupported grant type.`.
-Hợp lệ chỉ trả tạm **204 body rỗng**, `Cache-Control: no-store`, không Location/Set-Cookie.
-Không đọc/consume/hash code, không tra client/redirect, authenticate client, verify PKCE
-hay phát token. M6.2/M6.3/M6.4 lần lượt sở hữu code consumption, PKCE và client auth;
+TokenRequestService vẫn chỉ validate, không I/O; request hợp lệ mới vào M6.2:
+SHA-256 exact raw code → `oauth:code:<lowercase hex>` → một native Redis GETDEL
+→ canonical JSON/schema → expiresAt > safe current time → exact client_id/redirect_uri
+binding. Không trim/normalize/decode lần hai, không lookup DB/registry. Unknown, replay,
+Redis/logical expiry hoặc sai binding cùng trả fixed 400 `invalid_grant` /
+`Invalid authorization grant.`. JSON/schema hỏng, hashing/Redis/clock lỗi trả fixed
+500 `server_error` / `Token request failed.`. Sau GETDEL không restore, kể cả sai binding.
+Consume thành công mới trả tạm **204 body rỗng**, `Cache-Control: no-store`, không
+Location/Set-Cookie. Chưa verify PKCE (M6.3), authenticate client (M6.4) hoặc phát token;
 các bước sau sẽ thay staged 204. `GET /oauth/token` vẫn 404.
 
 Sau build/Compose startup chạy `pnpm --filter identity-server token-request:check`:
-synthetic HTTP cases, Redis code-value/expiry snapshots và fingerprint 8 bảng DB
-phải không đổi. Probe chỉ tạo/xóa một sentinel key của chính nó, không lấy real code
-và không in code/verifier hoặc driver/parser details.
+synthetic malformed/unsupported requests phải giữ nguyên matching code sentinel;
+well-shaped unknown code đi qua GETDEL và trả invalid_grant. Code-value/expiry
+snapshots và fingerprint 8 bảng DB không đổi; probe chỉ cleanup key của chính nó.
+
+Chạy `pnpm --filter identity-server authorization-code-consume:check` để kiểm tra
+first consume/replay/unknown, đúng 1/12 concurrent winner, Redis TTL và logical expiry,
+exact binding/burn, opaque code và malformed state trên Nest/Redis thật. Chỉ dùng
+synthetic code/state riêng, không consume M5 codes, không flush/xóa unrelated keys;
+fingerprint DB và unrelated code snapshots phải không đổi, owned keys được cleanup.
+Redis/hash failures được kiểm tra deterministic bằng unit/HTTP tests; không gây outage
+cho shared Compose. Không in code/verifier/hash/state hoặc private driver details.

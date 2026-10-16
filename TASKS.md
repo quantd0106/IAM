@@ -639,7 +639,7 @@ grant_type=authorization_code
 
 ## M6.2 — Authorization-code atomic consumption
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

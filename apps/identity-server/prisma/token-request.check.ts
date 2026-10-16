@@ -1,8 +1,9 @@
 // Explicit local HTTP probe. Only observers/one owned sentinel touch storage;
-// the production M6.1 request path must perform no storage operations.
+// failed M6.1 validation must never reach M6.2. Well-shaped unknown codes now
+// reach GETDEL and return invalid_grant without mutating existing code state.
 import 'dotenv/config';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { createClient, RESP_TYPES } from 'redis';
 import { validateEnvironment } from '../src/config/env.schema.js';
@@ -16,6 +17,10 @@ const unsupported = {
   error_description: 'Unsupported grant type.',
 };
 const form = 'application/x-www-form-urlencoded';
+const invalidGrant = {
+  error: 'invalid_grant',
+  error_description: 'Invalid authorization grant.',
+};
 
 async function checkTokenRequests(): Promise<void> {
   const env = validateEnvironment(process.env);
@@ -44,10 +49,9 @@ async function checkTokenRequests(): Promise<void> {
     connectionString: env.DATABASE_URL,
     connectionTimeoutMillis: 5000,
   });
+  const syntheticCode = 'm61-synthetic-code-' + randomUUID();
   const sentinel =
-    'oauth:code:' +
-    randomUUID().replaceAll('-', '') +
-    randomUUID().replaceAll('-', '');
+    'oauth:code:' + createHash('sha256').update(syntheticCode).digest('hex');
   let owned = false;
   let cases = 0;
   const snapshotCodes = async (): Promise<
@@ -133,32 +137,47 @@ async function checkTokenRequests(): Promise<void> {
     const initial = await snapshotCodes();
     const beforeDb = await snapshotDb();
     assert.ok(
-      (await redis.set(sentinel, JSON.stringify({ probe: 'M6.1-sentinel' }), {
-        EX: 120,
-        NX: true,
-      })) !== null,
+      (await redis.set(
+        sentinel,
+        JSON.stringify({
+          clientId: 'student-spa',
+          userId: randomUUID(),
+          redirectUri: 'http://localhost:3200/callback',
+          grantedScopes: ['openid', 'profile'],
+          codeChallenge: 'A'.repeat(43),
+          nonce: null,
+          authTime: Date.now() - 1000,
+          expiresAt: Date.now() + 120000,
+        }),
+        {
+          EX: 120,
+          NX: true,
+        },
+      )) !== null,
     );
     owned = true;
     const before = await snapshotCodes();
     const valid = {
       grant_type: 'authorization_code',
       client_id: 'student-spa',
-      code: 'm61-synthetic-code-' + randomUUID(),
+      code: syntheticCode,
       redirect_uri: 'http://localhost:3200/callback',
       code_verifier: 'm61-synthetic-opaque-verifier',
     };
-    await post(new URLSearchParams(valid).toString(), 204);
-    const withoutVerifier = new URLSearchParams(valid);
+    const unknown = { ...valid, code: 'm62-unknown-' + randomUUID() };
+    await post(new URLSearchParams(unknown).toString(), 400, invalidGrant);
+    const withoutVerifier = new URLSearchParams(unknown);
     withoutVerifier.delete('code_verifier');
-    await post(withoutVerifier.toString(), 204);
+    await post(withoutVerifier.toString(), 400, invalidGrant);
     await post(
       new URLSearchParams({
-        ...valid,
+        ...unknown,
         client_id: 'unknown opaque client',
         redirect_uri: ' unregistered e\u0301 %2F+ ',
         code_verifier: ' short ',
       }).toString(),
-      204,
+      400,
+      invalidGrant,
     );
     for (const field of Object.keys(valid)) {
       const missing = new URLSearchParams(valid);
@@ -251,7 +270,7 @@ async function checkTokenRequests(): Promise<void> {
       'Probe did not restore its owned sentinel.',
     );
     console.log(
-      `M6.1 token request check passed (${cases} HTTP cases); code values/expiry and 8 database fingerprints unchanged; owned sentinel removed.`,
+      `M6.1/M6.2 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; well-shaped unknown codes return invalid_grant; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
     );
   } finally {
     try {

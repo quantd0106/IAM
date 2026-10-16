@@ -29,15 +29,18 @@ import { IdpSessionStateService } from '../session/idp-session-state.service.js'
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
 import * as crypto from 'node:crypto';
 
-vi.mock('node:crypto', async (original) => ({
-  ...(await original<typeof import('node:crypto')>()),
-  createHash: vi.fn(() => {
-    throw new Error('Unexpected hashing.');
-  }),
-  randomBytes: vi.fn(() => {
-    throw new Error('Unexpected issuance.');
-  }),
-}));
+vi.mock('node:crypto', async (original) => {
+  const actual = await original<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    createHash: vi.fn(actual.createHash),
+    randomBytes: vi.fn(() => {
+      throw new Error('Unexpected issuance.');
+    }),
+  };
+});
+const realCrypto =
+  await vi.importActual<typeof import('node:crypto')>('node:crypto');
 
 const valid = {
   grant_type: 'authorization_code',
@@ -54,13 +57,43 @@ const unsupported = {
   error: 'unsupported_grant_type',
   error_description: 'Unsupported grant type.',
 };
+const invalidGrant = {
+  error: 'invalid_grant',
+  error_description: 'Invalid authorization grant.',
+};
+const serverError = {
+  error: 'server_error',
+  error_description: 'Token request failed.',
+};
 
-describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
+describe('POST /oauth/token M6.1 validation + M6.2 consumption (real parser + OAuthModule)', () => {
   let app: INestApplication<Server>;
   let logs: MockInstance[];
   const unexpected = vi.fn(() => {
     throw new Error('Unexpected storage/authentication operation.');
   });
+  const entries = new Map<string, string>();
+  const getAndDelete = vi.fn<RedisService['getAndDelete']>();
+  let expectedHashes = 0;
+  let expectedConsumes = 0;
+  const keyFor = (code: string): string =>
+    'oauth:code:' + realCrypto.createHash('sha256').update(code).digest('hex');
+  function put(input = valid, overrides: Record<string, unknown> = {}): void {
+    entries.set(
+      keyFor(input.code),
+      JSON.stringify({
+        clientId: input.client_id,
+        userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+        redirectUri: input.redirect_uri,
+        grantedScopes: ['openid', 'profile'],
+        codeChallenge: 'A'.repeat(43),
+        nonce: 'opaque-nonce',
+        authTime: Date.now() - 1000,
+        expiresAt: Date.now() + 120000,
+        ...overrides,
+      }),
+    );
+  }
   beforeAll(async () => {
     const module = await Test.createTestingModule({
       imports: [OAuthModule],
@@ -76,7 +109,7 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
       .overrideProvider(RedisService)
       .useValue({
         get: unexpected,
-        getAndDelete: unexpected,
+        getAndDelete,
         delete: unexpected,
         ttl: unexpected,
         setWithTtl: unexpected,
@@ -95,8 +128,6 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
       .useValue({ authorize: unexpected })
       .overrideProvider(AuthorizationRequestService)
       .useValue({ validate: unexpected })
-      .overrideProvider(AuthorizationCodeService)
-      .useValue({ issue: unexpected })
       .useMocker((token) =>
         token === ConfigService
           ? new ConfigService({ COOKIE_NAME: 'iam.sid', COOKIE_SECURE: false })
@@ -106,10 +137,20 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
     app = module.createNestApplication<INestApplication<Server>>({
       logger: false,
     });
-    await app.init();
+    // Listen once so concurrent Supertest requests do not each auto-bind the same server.
+    await app.listen(0, '127.0.0.1');
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    entries.clear();
+    expectedHashes = 0;
+    expectedConsumes = 0;
+    vi.mocked(crypto.createHash).mockImplementation(realCrypto.createHash);
+    getAndDelete.mockImplementation((key) => {
+      const value = entries.get(key) ?? null;
+      entries.delete(key);
+      return Promise.resolve(value);
+    });
     logs = [console, Logger, Logger.prototype].flatMap((target) =>
       ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'].flatMap((name) =>
         name in target
@@ -124,7 +165,13 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
   });
   afterEach(() => {
     expect(unexpected).not.toHaveBeenCalled();
-    expect(crypto.createHash).not.toHaveBeenCalled();
+    expect(crypto.createHash).toHaveBeenCalledTimes(expectedHashes);
+    expect(getAndDelete).toHaveBeenCalledTimes(expectedConsumes);
+    expect(
+      vi
+        .mocked(crypto.createHash)
+        .mock.calls.every(([algorithm]) => algorithm === 'sha256'),
+    ).toBe(true);
     expect(crypto.randomBytes).not.toHaveBeenCalled();
     for (const log of logs) expect(log).not.toHaveBeenCalled();
     vi.restoreAllMocks();
@@ -140,6 +187,10 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
     type = form,
     path = '/oauth/token',
   ): Promise<void> {
+    if (status === 204 || expected === invalidGrant || status === 500) {
+      expectedHashes++;
+      expectedConsumes++;
+    }
     const response = await request(app.getHttpServer())
       .post(path)
       .set('Content-Type', type)
@@ -152,8 +203,11 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
     else expect(response.body).toEqual(expected);
   }
 
-  it('accepts a fake code and optional opaque verifier; issues no token/session/callback', async () => {
+  it('unknown fake code reaches one GETDEL then invalid_grant; verifier remains optional on matching state', async () => {
+    await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
+    put();
     await check(new URLSearchParams(valid).toString(), 204);
+    put();
     await check(
       new URLSearchParams({
         ...valid,
@@ -172,12 +226,28 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
       code_verifier: ' +%2F e\u0301\t ',
     };
     const validate = vi.spyOn(app.get(TokenRequestService), 'validate');
+    put(input);
+    const consume = vi.spyOn(app.get(AuthorizationCodeService), 'consume');
     await check(new URLSearchParams(input).toString(), 204);
     expect(validate).toHaveBeenCalledExactlyOnceWith(input, form);
     expect(validate.mock.results[0].value).toEqual({
       ok: true,
       request: input,
     });
+    const call = consume.mock.calls[0][0];
+    expect(
+      JSON.stringify(call) ===
+        JSON.stringify({
+          code: input.code,
+          clientId: input.client_id,
+          redirectUri: input.redirect_uri,
+        }),
+    ).toBe(true);
+    expect(Object.keys(call).sort()).toEqual([
+      'clientId',
+      'code',
+      'redirectUri',
+    ]);
   });
 
   it.each(Object.keys(valid))(
@@ -240,6 +310,9 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
       .expect(400);
     expect(response.body).toEqual(invalid);
     expect(response.headers['set-cookie']).toBeUndefined();
+    put();
+    expectedHashes++;
+    expectedConsumes++;
     await request(app.getHttpServer())
       .post('/oauth/token')
       .set('Content-Type', form)
@@ -254,6 +327,97 @@ describe('POST /oauth/token M6.1 (real Express parser + OAuthModule)', () => {
       .get('/oauth/token')
       .query(valid)
       .expect(404);
+  });
+
+  it('burns code on success/replay and exact client/redirect mismatches', async () => {
+    put();
+    await check(new URLSearchParams(valid).toString(), 204);
+    await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
+    for (const change of [
+      { client_id: 'other-client' },
+      { redirect_uri: valid.redirect_uri + ' ' },
+    ]) {
+      put();
+      await check(
+        new URLSearchParams({ ...valid, ...change }).toString(),
+        400,
+        invalidGrant,
+      );
+      expect(entries.size).toBe(0);
+      await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
+    }
+  });
+
+  it('burns logically expired state even with a surviving Redis key', async () => {
+    put(valid, { expiresAt: Date.now() - 1 });
+    await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
+    expect(entries.size).toBe(0);
+  });
+
+  it.each(['malformed-json', 'invalid-schema', 'Redis'] as const)(
+    'sanitizes %s failure with fixed server_error and no restoration',
+    async (stage) => {
+      put();
+      if (stage === 'malformed-json')
+        entries.set(keyFor(valid.code), 'private-state-canary{');
+      if (stage === 'invalid-schema')
+        put(valid, { userId: 'private-user-canary' });
+      if (stage === 'Redis')
+        getAndDelete.mockRejectedValueOnce(
+          new Error('private-driver/code/hash/key-canary', {
+            cause: new Error('private cause'),
+          }),
+        );
+      await check(new URLSearchParams(valid).toString(), 500, serverError);
+      if (stage !== 'Redis') {
+        expect(entries.size).toBe(0);
+        await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
+      }
+    },
+  );
+
+  it('sanitizes hashing failure before any GETDEL', async () => {
+    vi.mocked(crypto.createHash).mockImplementationOnce(() => {
+      throw new Error('private-hash-code-canary');
+    });
+    expectedHashes++;
+    const response = await request(app.getHttpServer())
+      .post('/oauth/token')
+      .set('Content-Type', form)
+      .send(new URLSearchParams(valid).toString())
+      .expect(500);
+    expect(response.body).toEqual(serverError);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers.location).toBeUndefined();
+    expect(response.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('concurrent identical requests yield exactly one 204 and all others invalid_grant', async () => {
+    put();
+    expectedHashes += 10;
+    expectedConsumes += 10;
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        request(app.getHttpServer())
+          .post('/oauth/token')
+          .set('Content-Type', form)
+          .send(new URLSearchParams(valid).toString()),
+      ),
+    );
+    expect(
+      responses.filter((response) => response.status === 204),
+    ).toHaveLength(1);
+    expect(
+      responses.filter((response) => response.status === 400),
+    ).toHaveLength(9);
+    for (const response of responses) {
+      if (response.status === 204) expect(response.text).toBe('');
+      else expect(response.body).toEqual(invalidGrant);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers.location).toBeUndefined();
+      expect(response.headers['set-cookie']).toBeUndefined();
+    }
+    expect(entries.size).toBe(0);
   });
 
   it.each(['/oauth/token', '/OAUTH/TOKEN/', '/oauth/token?x=1'])(

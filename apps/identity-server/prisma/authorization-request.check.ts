@@ -459,6 +459,9 @@ async function checkAuthorizationRequests(): Promise<void> {
           inject: [RedisService],
           factory: (liveRedis: RedisService) => {
             const service = new AuthorizationCodeService({
+              getAndDelete: () => {
+                throw new Error('Authorization probe must not consume.');
+              },
               setIfAbsentWithTtl: async (codeKey, serialized, ttl) => {
                 attempts.push(codeKey);
                 assert.ok(/^oauth:code:[0-9a-f]{64}$/.test(codeKey));

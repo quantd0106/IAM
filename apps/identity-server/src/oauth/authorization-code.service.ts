@@ -5,17 +5,57 @@ import { RedisService } from '../redis/redis.service.js';
 import {
   authorizationCodeStateSchema,
   type AuthorizationCodeInput,
+  type AuthorizationCodeState,
 } from './authorization-code.state.js';
 
 export const AUTHORIZATION_CODE_TTL_SECONDS = 120;
 const MAX_RESERVATION_ATTEMPTS = 3;
 
+export type AuthorizationCodeConsumeInput = {
+  code: string;
+  clientId: string;
+  redirectUri: string;
+};
+export type AuthorizationCodeConsumeResult =
+  | { ok: true; state: AuthorizationCodeState }
+  | { ok: false; error: 'invalid_grant' };
+
 @Injectable()
 export class AuthorizationCodeService {
   constructor(
     @Inject(RedisService)
-    private readonly redis: Pick<RedisService, 'setIfAbsentWithTtl'>,
+    private readonly redis: Pick<
+      RedisService,
+      'setIfAbsentWithTtl' | 'getAndDelete'
+    >,
   ) {}
+
+  /** Called only after M6.1 validation. Retrieval burns the code even on failure. */
+  async consume(
+    input: AuthorizationCodeConsumeInput,
+  ): Promise<AuthorizationCodeConsumeResult> {
+    try {
+      const hash = createHash('sha256').update(input.code).digest('hex');
+      const serialized = await this.redis.getAndDelete(
+        buildRedisKey('oauth:code', hash),
+      );
+      if (serialized === null) return { ok: false, error: 'invalid_grant' };
+      const state = authorizationCodeStateSchema.parse(JSON.parse(serialized));
+      const now = Date.now();
+      if (!Number.isSafeInteger(now) || now < 0)
+        throw new Error('Invalid consumption clock.');
+      if (
+        state.expiresAt <= now ||
+        state.clientId !== input.clientId ||
+        state.redirectUri !== input.redirectUri
+      )
+        return { ok: false, error: 'invalid_grant' };
+      return { ok: true, state };
+    } catch {
+      // No restore/retry, private cause, bearer credential, key or state leakage.
+      throw new Error('Authorization code consumption failed.');
+    }
+  }
 
   /** OAuth-internal; caller must have completed request validation and IdP authentication. */
   async issue(input: AuthorizationCodeInput): Promise<{ code: string }> {

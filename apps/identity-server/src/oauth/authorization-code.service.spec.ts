@@ -31,7 +31,12 @@ const crypto =
 
 describe('AuthorizationCodeService M5.5 issue-only capability', () => {
   const reserve = vi.fn<RedisService['setIfAbsentWithTtl']>();
-  const service = new AuthorizationCodeService({ setIfAbsentWithTtl: reserve });
+  const service = new AuthorizationCodeService({
+    setIfAbsentWithTtl: reserve,
+    getAndDelete: vi.fn(() => {
+      throw new Error('Issuance must not consume.');
+    }),
+  });
   const now = 1800000000000;
   const input: AuthorizationCodeInput = {
     clientId: 'student-spa',

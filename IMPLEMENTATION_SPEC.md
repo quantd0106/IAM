@@ -212,14 +212,38 @@ Shape/parser/media-type errors return HTTP 400
 grants other than exact authorization_code return HTTP 400
 {error: 'unsupported_grant_type', error_description: 'Unsupported grant type.'}.
 Parser errors are sanitized only for this token route; existing auth contracts remain.
-Successful validation temporarily returns HTTP 204, an empty body and
-Cache-Control: no-store, without Location or Set-Cookie. This is NOT token issuance.
-The service has no I/O: no code hashing/storage access, registry lookup, client
+Successful validation now continues into M6.2 below, rather than directly returning
+the original M6.1 staged 204. TokenRequestService itself has no I/O: no code hashing/storage access, registry lookup, client
 authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
-M6.2 owns atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
+M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-Those later integrations will replace the temporary 204. GET /oauth/token remains absent.
+M6.3+ integrations will replace the temporary 204. GET /oauth/token remains absent.
+
+M6.2 extends the same OAuth-internal AuthorizationCodeService with
+consume({code, clientId, redirectUri}): Promise<{ok: true, state: AuthorizationCodeState}
+| {ok: false, error: 'invalid_grant'}>. After successful M6.1 validation and exact
+grant dispatch, hash the exact framework-decoded code using
+createHash('sha256').update(code).digest('hex'), then buildRedisKey('oauth:code', hash).
+Exactly one RedisService.getAndDelete (native GETDEL) is the consumption authority:
+no GET/DEL pair, TTL read, script, retry write or restoration. Parse returned JSON
+and validate through the unchanged authorizationCodeStateSchema. Validate Date.now()
+as a non-negative safe integer, require state.expiresAt > now, then compare exact
+state.clientId === request.client_id and state.redirectUri === request.redirect_uri.
+The stored clientId is the external OAuth identifier, not Client.id; no DB/registry
+lookup, URI normalization, extra decoding or comparison against registered URI rows.
+
+Null GETDEL (unknown/replayed/naturally expired), logical expiry or either binding
+mismatch returns fixed HTTP 400 {error: 'invalid_grant',
+error_description: 'Invalid authorization grant.'}. Hash/Redis/JSON/schema/clock or
+unexpected failures return the existing fixed token HTTP 500 server_error above.
+After GETDEL returns a value, every failure burns the code permanently, including
+wrong bindings and corrupted state; a lost Redis reply is never retried/restored.
+Success returns only validated consumed state internally and temporarily HTTP 204
+with empty body, Cache-Control: no-store, no Location and no Set-Cookie. Concurrent
+requests have exactly one winner. No PKCE verification, verifier inspection, Basic
+authentication, client-secret access or token issuance is implemented. codeChallenge
+is only validated as canonical stored data and carried unchanged for future M6.3.
 
 Supported:
 
@@ -393,9 +417,8 @@ lost/failed HTTP delivery may leave the existing TTL-bounded entry; no rollback 
 network transaction is attempted. A request retry goes through normal validation
 and new issuance, not code reuse. Location/raw code/state are never logged.
 
-Token endpoint must atomically consume authorization-code state to prevent replay.
-Consumption/GETDEL/redemption/verifier handling belong to M6 and are not implemented
-by M5.5/M5.6; only the authorization success callback is implemented by M5.6.
+M6.2 now atomically consumes authorization-code state as described above; M5.5/M5.6
+issuance/callback behavior is unchanged. Verifier handling remains M6.3 work.
 
 ---
 

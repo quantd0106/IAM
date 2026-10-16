@@ -23,6 +23,10 @@ import {
   TokenRequestService,
   type TokenRequestResult,
 } from './token-request.service.js';
+import {
+  AuthorizationCodeService,
+  type AuthorizationCodeConsumeResult,
+} from './authorization-code.service.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -32,15 +36,17 @@ export class OAuthController {
     @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
     @Inject(TokenRequestService)
     private readonly tokenRequests: TokenRequestService,
+    @Inject(AuthorizationCodeService)
+    private readonly codes: Pick<AuthorizationCodeService, 'consume'>,
   ) {}
 
   @Post('token')
   @HttpCode(HttpStatus.NO_CONTENT)
   @Header('Cache-Control', 'no-store')
-  token(
+  async token(
     @Body() body: unknown,
     @Headers('content-type') contentType: string | undefined,
-  ): void {
+  ): Promise<void> {
     let result: TokenRequestResult;
     try {
       result = this.tokenRequests.validate(body, contentType);
@@ -61,7 +67,28 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    // Temporary M6.1 success only: never read/consume a code or issue a token.
+    let grant: AuthorizationCodeConsumeResult;
+    try {
+      grant = await this.codes.consume({
+        code: result.request.code,
+        clientId: result.request.client_id,
+        redirectUri: result.request.redirect_uri,
+      });
+    } catch {
+      throw new HttpException(
+        { error: 'server_error', error_description: 'Token request failed.' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    if (!grant.ok)
+      throw new HttpException(
+        {
+          error: 'invalid_grant',
+          error_description: 'Invalid authorization grant.',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    // Temporary M6.2 success only. PKCE/client authentication/token issuance follow later.
   }
 
   @Get('authorize')
