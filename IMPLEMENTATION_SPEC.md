@@ -201,6 +201,26 @@ GET  /oidc/userinfo
 
 ## 5. Authorization Code Flow
 
+M6.1 adds POST /oauth/token inside the existing non-global OAuthModule, accepting
+only application/x-www-form-urlencoded body input. A strict schema requires nonempty
+scalar strings grant_type, client_id, code, redirect_uri; code_verifier is optional
+but must be a nonempty scalar string when supplied. Unknown/repeated/structured
+fields are rejected. Opaque framework-decoded values are preserved exactly: no
+trimming, normalization, second decoding, URI parsing or PKCE policy at this boundary.
+Shape/parser/media-type errors return HTTP 400
+{error: 'invalid_request', error_description: 'Invalid token request.'}; well-shaped
+grants other than exact authorization_code return HTTP 400
+{error: 'unsupported_grant_type', error_description: 'Unsupported grant type.'}.
+Parser errors are sanitized only for this token route; existing auth contracts remain.
+Successful validation temporarily returns HTTP 204, an empty body and
+Cache-Control: no-store, without Location or Set-Cookie. This is NOT token issuance.
+The service has no I/O: no code hashing/storage access, registry lookup, client
+authentication or PKCE verification. Unexpected failures return fixed HTTP 500
+{error: 'server_error', error_description: 'Token request failed.'} without causes.
+M6.2 owns atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
+M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
+Those later integrations will replace the temporary 204. GET /oauth/token remains absent.
+
 Supported:
 
 ```text

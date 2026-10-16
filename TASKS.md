@@ -629,7 +629,7 @@ Depends on: M5.5, M5.6
 
 ## M6.1 — Token endpoint request validation
 
-Status: [ ]
+Status: [x]
 
 Support:
 

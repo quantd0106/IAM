@@ -740,7 +740,7 @@ issue và state gốc, body rỗng, không Set-Cookie hoặc subject data.
 Idle activity/TTL có thể advance theo M3, không đổi absolute expiry hay PostgreSQL.
 Chưa có login UI/return_to/continuation state: gọi existing POST /auth/login rồi
 gửi lại ĐÚNG authorize request ban đầu với iam.sid để resume. Logout/revocation
-ngăn cookie đó tiếp tục authorize. M6 token endpoint/consume vẫn chưa triển khai.
+ngăn cookie đó tiếp tục authorize. M6.1 token request validation đã có; consume/token issuance chưa triển khai.
 Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
 ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
 exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
@@ -771,7 +771,7 @@ userId/authTime lấy từ central session, PKCE/nonce vắng mặt hợp lệ d
 Expiry = một issue instant + 120000 ms; TTL cố định 120 giây. Collision không ghi đè,
 retry fresh code tối đa 3 lần, lỗi trả cùng safe 500. Raw code chỉ transient nội bộ,
 không nằm trong Redis/log/error/HTTP body; M5.6 chỉ đưa raw code vào validated
-Location. Chưa có consume/GETDEL, verifier hay token endpoint.
+Location. Chưa có consume/GETDEL hay verifier checking/token issuance.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
 Probe kiểm tra M5.1-M5.3 regressions trước session, login -> cookie -> same request
@@ -783,3 +783,22 @@ M5.6 đối chiếu code từ Location với Redis hash/state/TTL, exact registe
 fragment và reserved/Unicode state bằng registry fixture riêng, không sửa demo seed;
 chỉ xóa code/session keys thuộc probe. Disabled fixture rollback; snapshot DB/Redis
 được khôi phục sau probe, giữ nguyên seed và đóng servers/clients tạm.
+
+## 29. Token request boundary (M6.1)
+
+`POST /oauth/token` chỉ nhận form `application/x-www-form-urlencoded` từ body:
+`grant_type`, `client_id`, `code`, `redirect_uri` là scalar string không rỗng;
+`code_verifier` optional, nếu có cũng phải là scalar string không rỗng. Strict schema
+reject unknown/repeated/structured fields; giữ nguyên decoded values, không trim,
+normalize hay decode lần hai. Chỉ exact `authorization_code` được chấp nhận.
+Shape/parser/media-type lỗi trả fixed 400 `invalid_request` / `Invalid token request.`;
+grant khác nhưng đúng shape trả fixed 400 `unsupported_grant_type` / `Unsupported grant type.`.
+Hợp lệ chỉ trả tạm **204 body rỗng**, `Cache-Control: no-store`, không Location/Set-Cookie.
+Không đọc/consume/hash code, không tra client/redirect, authenticate client, verify PKCE
+hay phát token. M6.2/M6.3/M6.4 lần lượt sở hữu code consumption, PKCE và client auth;
+các bước sau sẽ thay staged 204. `GET /oauth/token` vẫn 404.
+
+Sau build/Compose startup chạy `pnpm --filter identity-server token-request:check`:
+synthetic HTTP cases, Redis code-value/expiry snapshots và fingerprint 8 bảng DB
+phải không đổi. Probe chỉ tạo/xóa một sentinel key của chính nó, không lấy real code
+và không in code/verifier hoặc driver/parser details.

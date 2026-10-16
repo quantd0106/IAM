@@ -6,6 +6,7 @@ import { SessionAuthenticationModule } from '../session/session-authentication.m
 import { AuthorizationService } from './authorization.service.js';
 import { AuthorizationCodeService } from './authorization-code.service.js';
 import { RedisModule } from '../redis/redis.module.js';
+import { TokenRequestService } from './token-request.service.js';
 
 @Module({
   imports: [ClientRegistryModule, SessionAuthenticationModule, RedisModule],
@@ -14,6 +15,7 @@ import { RedisModule } from '../redis/redis.module.js';
     AuthorizationRequestService,
     AuthorizationService,
     AuthorizationCodeService,
+    TokenRequestService,
   ],
 })
 export class OAuthModule {}

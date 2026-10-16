@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Header,
@@ -7,6 +8,7 @@ import {
   HttpException,
   HttpStatus,
   Inject,
+  Post,
   Query,
   Res,
   UnauthorizedException,
@@ -17,6 +19,10 @@ import {
 } from './authorization.service.js';
 import { HttpAdapterHost } from '@nestjs/core';
 import { buildAuthorizationSuccessLocation } from './authorization-response.js';
+import {
+  TokenRequestService,
+  type TokenRequestResult,
+} from './token-request.service.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -24,7 +30,39 @@ export class OAuthController {
     @Inject(AuthorizationService)
     private readonly authorization: AuthorizationService,
     @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
+    @Inject(TokenRequestService)
+    private readonly tokenRequests: TokenRequestService,
   ) {}
+
+  @Post('token')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Header('Cache-Control', 'no-store')
+  token(
+    @Body() body: unknown,
+    @Headers('content-type') contentType: string | undefined,
+  ): void {
+    let result: TokenRequestResult;
+    try {
+      result = this.tokenRequests.validate(body, contentType);
+    } catch {
+      throw new HttpException(
+        { error: 'server_error', error_description: 'Token request failed.' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    if (!result.ok)
+      throw new HttpException(
+        {
+          error: result.error,
+          error_description:
+            result.error === 'unsupported_grant_type'
+              ? 'Unsupported grant type.'
+              : 'Invalid token request.',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    // Temporary M6.1 success only: never read/consume a code or issue a token.
+  }
 
   @Get('authorize')
   @HttpCode(HttpStatus.FOUND)

@@ -2,13 +2,16 @@ import {
   BadRequestException,
   Catch,
   Inject,
+  HttpException,
+  HttpStatus,
   type ArgumentsHost,
 } from '@nestjs/common';
 import { BaseExceptionFilter, HttpAdapterHost } from '@nestjs/core';
 
 // Body-parser errors occur before controller filters. Register globally but
-// sanitize only registration/reset/login requests, including Express variants.
-@Catch(BadRequestException)
+// sanitize only the explicitly listed routes, including Express variants.
+// The token branch also handles body-parser's non-Nest 400/413/415 errors.
+@Catch()
 export class RegisterValidationFilter extends BaseExceptionFilter {
   constructor(
     @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
@@ -16,11 +19,39 @@ export class RegisterValidationFilter extends BaseExceptionFilter {
     super(adapterHost.httpAdapter);
   }
 
-  override catch(exception: BadRequestException, host: ArgumentsHost): void {
+  override catch(exception: unknown, host: ArgumentsHost): void {
     const request: unknown = host.switchToHttp().getRequest<unknown>();
     const adapter = this.adapterHost.httpAdapter;
     const method: unknown = adapter.getRequestMethod(request);
     const path: unknown = adapter.getRequestUrl(request);
+    if (
+      method === 'POST' &&
+      typeof path === 'string' &&
+      /^\/oauth\/token\/?$/i.test(path.split('?')[0]) &&
+      (exception instanceof BadRequestException || isBodyParserError(exception))
+    ) {
+      adapter.setHeader(
+        host.switchToHttp().getResponse<unknown>(),
+        'Cache-Control',
+        'no-store',
+      );
+      super.catch(
+        new HttpException(
+          {
+            error: 'invalid_request',
+            error_description: 'Invalid token request.',
+          },
+          HttpStatus.BAD_REQUEST,
+        ),
+        host,
+      );
+      return;
+    }
+    // Preserve the existing behavior of every non-token route/exception.
+    if (!(exception instanceof BadRequestException)) {
+      super.catch(exception, host);
+      return;
+    }
     if (
       method === 'POST' &&
       typeof path === 'string' &&
@@ -70,4 +101,20 @@ export class RegisterValidationFilter extends BaseExceptionFilter {
     }
     super.catch(exception, host);
   }
+}
+
+function isBodyParserError(exception: unknown): boolean {
+  // body-parser wraps input failures in http-errors. Decompression failures
+  // also have this shape but need not carry a `type` field. Never remap the
+  // controller's Nest HttpException (including unsupported_grant_type).
+  return (
+    exception instanceof Error &&
+    !(exception instanceof HttpException) &&
+    'expose' in exception &&
+    exception.expose === true &&
+    'status' in exception &&
+    (exception.status === 400 ||
+      exception.status === 413 ||
+      exception.status === 415)
+  );
 }

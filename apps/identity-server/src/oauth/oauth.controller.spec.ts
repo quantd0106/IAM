@@ -32,6 +32,7 @@ import { ClientSecretService } from '../client-registry/client-secret.service.js
 import { OAuthModule } from './oauth.module.js';
 import { OAuthController } from './oauth.controller.js';
 import { AuthorizationRequestService } from './authorization-request.service.js';
+import { TokenRequestService } from './token-request.service.js';
 
 const valid = {
   response_type: 'code',
@@ -327,6 +328,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       AuthorizationRequestService,
       AuthorizationService,
       AuthorizationCodeService,
+      TokenRequestService,
     ]);
     expect(
       Reflect.getMetadata('__module:global__', OAuthModule) as unknown,
