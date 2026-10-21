@@ -668,7 +668,7 @@ pnpm --filter identity-server test:integration
 
 ## M6.4 — Confidential-client authentication
 
-Status: [ ]
+Status: [x]
 
 Method:
 

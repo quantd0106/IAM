@@ -22,6 +22,7 @@
     "authorize:check": "tsx prisma/authorization-request.check.ts",
     "token-request:check": "tsx prisma/token-request.check.ts",
     "authorization-code-consume:check": "tsx prisma/authorization-code-consume.check.ts",
+    "client-authentication:check": "tsx prisma/client-authentication.check.ts",
     "seed": "pnpm prisma:generate && prisma db seed",
     "seed:check": "tsx prisma/seed.check.ts",
     "redis:check": "node --env-file-if-exists=.env dist/redis/redis.check.js",

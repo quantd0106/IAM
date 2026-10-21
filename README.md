@@ -784,7 +784,7 @@ fragment và reserved/Unicode state bằng registry fixture riêng, không sửa
 chỉ xóa code/session keys thuộc probe. Disabled fixture rollback; snapshot DB/Redis
 được khôi phục sau probe, giữ nguyên seed và đóng servers/clients tạm.
 
-## 29. Token request boundary, consumption and PKCE (M6.1–M6.3)
+## 29. Token request boundary, client authentication, consumption and PKCE (M6.1–M6.4)
 
 `POST /oauth/token` chỉ nhận form `application/x-www-form-urlencoded` từ body:
 `grant_type`, `client_id`, `code`, `redirect_uri` là scalar string không rỗng;
@@ -794,10 +794,22 @@ reject unknown/repeated/structured fields; giữ nguyên decoded values, không 
 normalize hay decode lần hai. Chỉ exact `authorization_code` được chấp nhận.
 Shape/parser/media-type lỗi trả fixed 400 `invalid_request` / `Invalid token request.`;
 grant khác nhưng đúng shape trả fixed 400 `unsupported_grant_type` / `Unsupported grant type.`.
-TokenRequestService vẫn chỉ validate, không I/O; request hợp lệ mới vào M6.2:
+TokenRequestService vẫn chỉ validate, không I/O. Request hợp lệ qua M6.4 trước M6.2:
+lookup exact body `client_id`, không trim/case-fold/Unicode normalize/fallback.
+PUBLIC Student SPA không cần secret và chỉ đi tiếp khi không gửi Authorization;
+gửi Basic hoặc authentication khác bị reject. Banking/Admin CONFIDENTIAL bắt buộc
+`client_secret_basic`: scheme không phân biệt hoa thường, strict standard Base64/UTF-8,
+split colon đầu tiên rồi form-decode từng component đúng một lần; Basic client_id phải
+exact-match body client_id. Verify secret bằng Argon2 với persisted Argon2id hash,
+không trả hash khỏi capability, không gọi issuance/rotation. Unknown/disabled/missing/
+malformed/unsupported/mismatch/absent hash/wrong secret cùng fixed **401 `invalid_client`** /
+`Client authentication failed.` và `WWW-Authenticate: Basic realm="oauth/token"`.
+Auth lỗi không hash/GETDEL/burn code hoặc thay expiry; DB/Argon2/internal lỗi cùng fixed
+500 `server_error` / `Token request failed.`, không native cause hay private logs.
+Sau auth thành công mới vào M6.2:
 SHA-256 exact raw code → `oauth:code:<lowercase hex>` → một native Redis GETDEL
 → canonical JSON/schema → expiresAt > safe current time → exact client_id/redirect_uri
-binding. Không trim/normalize/decode lần hai, không lookup DB/registry. Unknown, replay,
+binding. Consume capability không trim/normalize/decode lần hai hoặc tự lookup DB/registry. Unknown code, replay,
 Redis/logical expiry hoặc sai binding cùng trả fixed 400 `invalid_grant` /
 `Invalid authorization grant.`. JSON/schema hỏng, hashing/Redis/clock lỗi trả fixed
 500 `server_error` / `Token request failed.`. Sau GETDEL không restore, kể cả sai binding.
@@ -805,21 +817,31 @@ Sau consume, M6.3 yêu cầu verifier dài 43..128 ký tự ASCII unreserved `[A
 khi stored challenge khác null; tính SHA-256 ASCII/base64url không padding và so sánh
 exact, không plain fallback/trim/normalize/decode lại. Thiếu/rỗng/sai syntax/sai verifier
 cùng trả fixed `invalid_grant` và code vẫn bị burn; retry không cứu được code.
-Challenge null không yêu cầu PKCE và bỏ qua verifier optional; không tra/authenticate client.
-Consume và PKCE thành công mới trả tạm **204 body rỗng**, `Cache-Control: no-store`, không
-Location/Set-Cookie. Chưa authenticate client (M6.4) hoặc phát token;
+Challenge null không yêu cầu PKCE và bỏ qua verifier optional; không bỏ qua M6.4 client auth.
+Auth, consume và PKCE thành công mới trả tạm **204 body rỗng**, `Cache-Control: no-store`, không
+Location/Set-Cookie. Chưa phát token;
 các bước sau sẽ thay staged 204. `GET /oauth/token` vẫn 404.
 
 Sau build/Compose startup chạy `pnpm --filter identity-server token-request:check`:
 synthetic malformed/unsupported requests phải giữ nguyên matching code sentinel;
-well-shaped unknown code đi qua GETDEL và trả invalid_grant. Code-value/expiry
+well-shaped unknown code của enabled PUBLIC client đi qua GETDEL và trả invalid_grant,
+unknown client trả invalid_client trước GETDEL. Code-value/expiry
 snapshots và fingerprint 8 bảng DB không đổi; probe chỉ cleanup key của chính nó.
 
 Chạy `pnpm --filter identity-server authorization-code-consume:check` để kiểm tra
 first consume/replay/unknown, đúng 1/12 concurrent winner, Redis TTL và logical expiry,
 exact binding/burn, opaque code, S256 verifier 43/128, PKCE failure burn/replay,
 null-challenge và malformed state trên Nest/Redis thật. Chỉ dùng
-synthetic code/state riêng, không consume M5 codes, không flush/xóa unrelated keys;
-fingerprint DB và unrelated code snapshots phải không đổi, owned keys được cleanup.
+synthetic code/state và một PUBLIC client fixture riêng, không consume M5 codes,
+không flush/xóa unrelated keys; fingerprint DB được restore sau cleanup fixture,
+unrelated code snapshots không đổi, owned keys được cleanup.
 Redis/hash failures được kiểm tra deterministic bằng unit/HTTP tests; không gây outage
 cho shared Compose. Không in code/verifier/hash/state hoặc private driver details.
+
+Chạy `pnpm --filter identity-server client-authentication:check` để kiểm tra PUBLIC,
+Banking/Admin-like và opaque client fixtures với Argon2id thật, các auth lỗi giữ nguyên
+code/value/expiry rồi retry valid thành công, PKCE lỗi vẫn burn sau auth, null challenge
+vẫn cần confidential auth. Probe chỉ tạo/xóa UUID-owned clients/codes, restore fingerprint
+8 bảng DB và giữ nguyên unrelated codes; không thay canonical seed hashes hay giải quyết
+one-time demo secret delivery. Unit/HTTP tests cover DB/Argon2 faults, no logs/leaks,
+safe metadata projection, không gọi secret issuance và PUBLIC không chạy Argon2.

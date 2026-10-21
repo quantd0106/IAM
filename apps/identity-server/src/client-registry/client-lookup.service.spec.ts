@@ -14,6 +14,7 @@ import { PrismaModule } from '../prisma/prisma.module.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ClientRegistryModule } from './client-registry.module.js';
 import { ClientSecretService } from './client-secret.service.js';
+import { ClientAuthenticationService } from './client-authentication.service.js';
 import {
   ClientLookupService,
   type EnabledClient,
@@ -124,7 +125,7 @@ describe('ClientLookupService', () => {
     }
   });
 
-  it('exports all three capabilities from a non-global Prisma-only module without controllers', () => {
+  it('exports all four capabilities from a non-global Prisma-only module without controllers', () => {
     const consumer = module.get<{
       clients: ClientLookupService;
       scopes: ScopeLookupService;
@@ -138,7 +139,12 @@ describe('ClientLookupService', () => {
     ).toEqual([PrismaModule]);
     expect(
       Reflect.getMetadata('exports', ClientRegistryModule) as unknown,
-    ).toEqual([ClientSecretService, ClientLookupService, ScopeLookupService]);
+    ).toEqual([
+      ClientSecretService,
+      ClientLookupService,
+      ScopeLookupService,
+      ClientAuthenticationService,
+    ]);
     expect(
       (Reflect.getMetadata('controllers', ClientRegistryModule) as unknown) ??
         [],

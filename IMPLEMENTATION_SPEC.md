@@ -214,18 +214,51 @@ Shape/parser/media-type errors return HTTP 400
 grants other than exact authorization_code return HTTP 400
 {error: 'unsupported_grant_type', error_description: 'Unsupported grant type.'}.
 Parser errors are sanitized only for this token route; existing auth contracts remain.
-Successful validation now continues into M6.2 below, rather than directly returning
+Successful validation now continues into M6.4 client resolution/authentication before M6.2 below, rather than directly returning
 the original M6.1 staged 204. TokenRequestService itself has no I/O: no code hashing/storage access, registry lookup, client
 authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
 M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-M6.4+ integrations will replace the temporary 204. GET /oauth/token remains absent.
+M6.4 preserves the temporary 204; M6.5+ integrations will replace it. GET /oauth/token remains absent.
+
+M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
+The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
+resolution/authentication -> M6.2 code hashing/GETDEL/binding -> M6.3 PKCE -> empty 204.
+Resolve the exact body client_id against Client.clientId: no trim, case conversion,
+Unicode normalization, alias or fallback. Unknown/disabled clients fail authentication.
+PUBLIC clients (Student SPA) require no secret and proceed only without an Authorization
+header; supplied authentication, including client_secret_basic, is rejected. Their
+path never uses/verifies a secret hash. CONFIDENTIAL clients (Banking/Admin BFFs)
+require client_secret_basic. The Basic scheme is case-insensitive; require a strict,
+canonical standard-Base64 credential value containing client identifier and secret.
+Decode UTF-8 strictly, split at the first colon, then application/x-www-form-urlencoded
+decode each component exactly once, as required by OAuth client_secret_basic. Both
+components must be nonempty. Compare decoded Basic client_id with body client_id
+exactly; do not transform the already framework-decoded body or trim/normalize/repair
+either credential. Other schemes and malformed/missing credentials are rejected.
+Verify the presented secret using installed Argon2 against the persisted Argon2id hash.
+The stored hash stays private to this capability; return only id/clientId/clientType.
+ClientLookupService's safe metadata projection and ClientSecretService's issuance/
+rotation lifecycle are unchanged; authentication never calls issueSecret().
+
+Every expected authentication failure (unknown/disabled client, PUBLIC supplied auth,
+missing/malformed/unsupported Basic, Basic/body mismatch, absent hash or wrong secret)
+returns the same HTTP 401 {error: 'invalid_client',
+error_description: 'Client authentication failed.'} and WWW-Authenticate:
+Basic realm="oauth/token". Do not reveal which condition failed. No code hashing,
+GETDEL or PKCE is attempted on authentication failure: the code/value/expiry remain
+available for a later correctly authenticated attempt. Unexpected DB/Argon2/internal
+failures, including a corrupt stored hash, use fixed token HTTP 500 server_error above,
+without native causes or private details; they also precede consumption. Do not log
+credentials, hashes, challenges or authorization codes. No token issuance or secret
+delivery channel is added. Canonical demo seed hashes remain unchanged; local probes
+use only isolated known-secret Argon2id fixtures and clean up their own state.
 
 M6.2 extends the same OAuth-internal AuthorizationCodeService with
 consume({code, clientId, redirectUri}): Promise<{ok: true, state: AuthorizationCodeState}
-| {ok: false, error: 'invalid_grant'}>. After successful M6.1 validation and exact
-grant dispatch, hash the exact framework-decoded code using
+| {ok: false, error: 'invalid_grant'}>. After successful M6.1 validation/exact
+grant dispatch and M6.4 authentication, hash the exact framework-decoded code using
 createHash('sha256').update(code).digest('hex'), then buildRedisKey('oauth:code', hash).
 Exactly one RedisService.getAndDelete (native GETDEL) is the consumption authority:
 no GET/DEL pair, TTL read, script, retry write or restoration. Parse returned JSON
@@ -245,7 +278,7 @@ Success returns only validated consumed state internally and temporarily HTTP 20
 with empty body, Cache-Control: no-store, no Location and no Set-Cookie. Concurrent
 requests have exactly one winner. Successful consumption now continues into M6.3
 below before returning the staged 204. The consume capability itself remains
-verifier-agnostic. No Basic authentication, client-secret access or token issuance.
+verifier-agnostic and performs no client authentication/secret access itself. No token issuance.
 
 Supported:
 
@@ -479,8 +512,8 @@ is ignored; this does not classify/authenticate the client. Structural non-strin
 array/object/repeated verifier values remain M6.1 invalid_request before GETDEL.
 Unexpected crypto/internal failures use the existing fixed HTTP 500 server_error
 with description Token request failed., without causes or sensitive logs. Success
-still returns empty 204/no-store/no Location/no Set-Cookie. M6.4 client authentication
-and later token issuance remain unimplemented. No storage-format or M5.2 policy change.
+still returns empty 204/no-store/no Location/no Set-Cookie. M6.4 authenticates the client
+before consumption; later token issuance remains unimplemented. No storage-format or M5.2 policy change.
 
 Calculation:
 

@@ -28,6 +28,10 @@ import {
   type AuthorizationCodeConsumeResult,
 } from './authorization-code.service.js';
 import { verifyTokenPkce } from './token-pkce.policy.js';
+import {
+  ClientAuthenticationService,
+  type TokenClientAuthenticationResult,
+} from '../client-registry/client-authentication.service.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -39,6 +43,8 @@ export class OAuthController {
     private readonly tokenRequests: TokenRequestService,
     @Inject(AuthorizationCodeService)
     private readonly codes: Pick<AuthorizationCodeService, 'consume'>,
+    @Inject(ClientAuthenticationService)
+    private readonly clients: ClientAuthenticationService,
   ) {}
 
   @Post('token')
@@ -47,6 +53,8 @@ export class OAuthController {
   async token(
     @Body() body: unknown,
     @Headers('content-type') contentType: string | undefined,
+    @Headers('authorization') authorizationHeader: string | undefined,
+    @Res({ passthrough: true }) response: unknown,
   ): Promise<void> {
     let result: TokenRequestResult;
     try {
@@ -68,6 +76,32 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
+    let authentication: TokenClientAuthenticationResult;
+    try {
+      authentication = await this.clients.authenticateTokenClient(
+        result.request.client_id,
+        authorizationHeader,
+      );
+    } catch {
+      throw new HttpException(
+        { error: 'server_error', error_description: 'Token request failed.' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    if (!authentication.ok) {
+      this.adapterHost.httpAdapter.setHeader(
+        response,
+        'WWW-Authenticate',
+        'Basic realm="oauth/token"',
+      );
+      throw new HttpException(
+        {
+          error: 'invalid_client',
+          error_description: 'Client authentication failed.',
+        },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
     let grant: AuthorizationCodeConsumeResult;
     let pkceValid = false;
     try {
@@ -95,7 +129,7 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    // Temporary M6.3 success only. Client authentication/token issuance follow later.
+    // Temporary M6.4 success only. Token issuance follows in later tasks.
   }
 
   @Get('authorize')

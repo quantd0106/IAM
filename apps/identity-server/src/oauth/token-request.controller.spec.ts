@@ -25,6 +25,7 @@ import { RedisService } from '../redis/redis.service.js';
 import { ClientLookupService } from '../client-registry/client-lookup.service.js';
 import { ScopeLookupService } from '../client-registry/scope-lookup.service.js';
 import { ClientSecretService } from '../client-registry/client-secret.service.js';
+import { ClientAuthenticationService } from '../client-registry/client-authentication.service.js';
 import { IdpSessionStateService } from '../session/idp-session-state.service.js';
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
 import * as crypto from 'node:crypto';
@@ -75,6 +76,13 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     throw new Error('Unexpected storage/authentication operation.');
   });
   const entries = new Map<string, string>();
+  // Isolate the existing shape/GETDEL/PKCE regression suite; M6.4 has real-auth HTTP tests.
+  const authenticateTokenClient = vi.fn((clientId: string) =>
+    Promise.resolve({
+      ok: true as const,
+      client: { id: 'fixture-client', clientId, clientType: 'PUBLIC' as const },
+    }),
+  );
   const getAndDelete = vi.fn<RedisService['getAndDelete']>();
   let expectedHashes = 0;
   let expectedConsumes = 0;
@@ -124,6 +132,8 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       .useValue({ getAllowedScopeNames: unexpected })
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
+      .overrideProvider(ClientAuthenticationService)
+      .useValue({ authenticateTokenClient })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch: unexpected })
       .overrideProvider(AuthorizationService)
@@ -189,6 +199,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     type = form,
     path = '/oauth/token',
   ): Promise<void> {
+    const authCalls = authenticateTokenClient.mock.calls.length;
     if (status === 204 || expected === invalidGrant || status === 500) {
       expectedHashes++;
       expectedConsumes++;
@@ -203,6 +214,8 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     expect(response.headers['set-cookie']).toBeUndefined();
     if (status === 204) expect(response.text).toBe('');
     else expect(response.body).toEqual(expected);
+    if (status === 400 && (expected === invalid || expected === unsupported))
+      expect(authenticateTokenClient).toHaveBeenCalledTimes(authCalls);
   }
 
   it('unknown fake code reaches one GETDEL then invalid_grant; verifier remains optional on matching state', async () => {
@@ -417,7 +430,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     },
   );
 
-  it('does not use query, headers, Authorization or cookie as a protocol authority', async () => {
+  it('does not use query, arbitrary headers or cookie as body field authority', async () => {
     const response = await request(app.getHttpServer())
       .post(`/oauth/token?${new URLSearchParams(valid)}`)
       .set('Content-Type', form)
@@ -434,7 +447,6 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     await request(app.getHttpServer())
       .post('/oauth/token')
       .set('Content-Type', form)
-      .set('Authorization', 'not-even-basic')
       .set('Cookie', 'iam.sid=synthetic-cookie')
       .send(new URLSearchParams(valid).toString())
       .expect(204);

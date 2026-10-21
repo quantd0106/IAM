@@ -1,6 +1,6 @@
 // Explicit local HTTP probe. Only observers/one owned sentinel touch storage;
 // failed M6.1 validation must never reach M6.2. Well-shaped unknown codes now
-// reach GETDEL and return invalid_grant without mutating existing code state.
+// for enabled PUBLIC clients reach GETDEL and return invalid_grant.
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -20,6 +20,10 @@ const form = 'application/x-www-form-urlencoded';
 const invalidGrant = {
   error: 'invalid_grant',
   error_description: 'Invalid authorization grant.',
+};
+const invalidClient = {
+  error: 'invalid_client',
+  error_description: 'Client authentication failed.',
 };
 
 async function checkTokenRequests(): Promise<void> {
@@ -122,6 +126,10 @@ async function checkTokenRequests(): Promise<void> {
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('location'), null);
     assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(
+      response.headers.get('www-authenticate'),
+      status === 401 ? 'Basic realm="oauth/token"' : null,
+    );
     const text = await response.text();
     if (status === 204)
       assert.ok(text === '', 'Staged token success must be empty.');
@@ -181,8 +189,8 @@ async function checkTokenRequests(): Promise<void> {
         redirect_uri: ' unregistered e\u0301 %2F+ ',
         code_verifier: ' short ',
       }).toString(),
-      400,
-      invalidGrant,
+      401,
+      invalidClient,
     );
     for (const field of Object.keys(valid)) {
       const missing = new URLSearchParams(valid);
@@ -277,7 +285,7 @@ async function checkTokenRequests(): Promise<void> {
       'Probe did not restore its owned sentinel.',
     );
     console.log(
-      `M6.1-M6.3 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; unknown codes (including empty scalar verifier) return invalid_grant; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
+      `M6.1-M6.4 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; enabled PUBLIC unknown codes return invalid_grant; unknown client returns invalid_client; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
     );
   } finally {
     try {

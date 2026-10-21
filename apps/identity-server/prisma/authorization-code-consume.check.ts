@@ -52,6 +52,9 @@ async function checkConsumption(): Promise<void> {
     connectionTimeoutMillis: 5000,
   });
   const owned = new Set<string>();
+  const ownedClientId = randomUUID();
+  const opaqueClientId = ' owned e\u0301 CLIENT ' + randomUUID() + ' ';
+  let clientCreated = false;
   let cases = 0;
   const keyFor = (code: string): string =>
     buildRedisKey(
@@ -91,7 +94,7 @@ async function checkConsumption(): Promise<void> {
   ): Promise<number> => {
     const response = await fetch(new URL('/oauth/token', env.ISSUER_URL), {
       method: 'POST',
-      headers: { 'Content-Type': form, Authorization: 'not-even-basic' },
+      headers: { 'Content-Type': form },
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: clientId,
@@ -182,6 +185,16 @@ async function checkConsumption(): Promise<void> {
     await redis.connect();
     const dbBefore = await snapshotDb();
     const codesBefore = await snapshotCodes();
+    await db.query(
+      'INSERT INTO clients (id, client_id, name, client_type, enabled) VALUES ($1, $2, $3, $4, true)',
+      [
+        ownedClientId,
+        opaqueClientId,
+        'Consumption probe owned PUBLIC',
+        'PUBLIC',
+      ],
+    );
+    clientCreated = true;
     const first = await fixture({ ...base(), codeChallenge: validChallenge });
     assert.equal(
       await post(
@@ -252,7 +265,7 @@ async function checkConsumption(): Promise<void> {
     assert.equal(await redis.exists(logical.key), 0);
 
     for (const change of [
-      { clientId: 'other-client' },
+      { clientId: opaqueClientId },
       { redirectUri: 'http://LOCALHOST:3200/callback' },
       { redirectUri: 'http://localhost:3200/call%62ack' },
     ]) {
@@ -277,7 +290,7 @@ async function checkConsumption(): Promise<void> {
     }
     const exact = await fixture({
       ...base(),
-      clientId: ' unknown e\u0301 CLIENT ',
+      clientId: opaqueClientId,
       redirectUri: ' HTTPS://EXAMPLE.invalid:443/a/../%2f?b=2&a=%2520#frag ',
     });
     assert.equal(
@@ -394,6 +407,11 @@ async function checkConsumption(): Promise<void> {
         400,
       );
     }
+    await db.query('DELETE FROM clients WHERE id = $1 AND client_id = $2', [
+      ownedClientId,
+      opaqueClientId,
+    ]);
+    clientCreated = false;
     assert.ok(
       (await snapshotDb()) === dbBefore,
       'Consumption mutated database fingerprints.',
@@ -409,13 +427,18 @@ async function checkConsumption(): Promise<void> {
         'Owned code remains after consume/expiry.',
       );
     console.log(
-      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; no client auth/tokens; 8 DB fingerprints and unrelated code snapshots unchanged; zero owned keys remain.`,
+      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; enabled PUBLIC resolution, no tokens; 8 DB fingerprints and unrelated code snapshots restored; owned client removed; zero owned keys remain.`,
     );
   } finally {
     try {
       if (redis.isReady) for (const key of owned) await redis.del(key);
     } finally {
       if (redis.isOpen) redis.destroy();
+      if (clientCreated)
+        await db.query('DELETE FROM clients WHERE id = $1 AND client_id = $2', [
+          ownedClientId,
+          opaqueClientId,
+        ]);
       await db.end();
     }
   }
