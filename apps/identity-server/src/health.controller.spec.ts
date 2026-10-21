@@ -8,6 +8,7 @@ import type { INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { RedisService } from './redis/redis.service.js';
 import { SigningKeyService } from './security/signing/signing-key.service.js';
+import { AccessTokenClaimsService } from './tokens/access-token-claims.service.js';
 
 describe('Identity Server', () => {
   let app: INestApplication<Server>;
@@ -75,6 +76,39 @@ describe('Identity Server', () => {
       .get('/health')
       .expect(200)
       .expect({ status: 'ok' });
+  });
+
+  it('builds internal claims without initializing signing keys or affecting health', async () => {
+    const keys = app.get(SigningKeyService);
+    const methods = [
+      'getPrivateSigningKey',
+      'getPublicVerificationKey',
+      'getPublicJwk',
+      'getKeyId',
+    ] as const;
+    const spies = methods.map((method) => vi.spyOn(keys, method));
+    try {
+      const claims = app.get(AccessTokenClaimsService).build({
+        subject: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+        audience: 'student-api',
+        scopes: ['openid', 'profile'],
+        roles: [],
+        permissions: [],
+      });
+      expect(claims).toMatchObject({
+        aud: 'student-api',
+        scope: 'openid profile',
+        roles: [],
+        permissions: [],
+      });
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      await request(app.getHttpServer())
+        .get('/health')
+        .expect(200)
+        .expect({ status: 'ok' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it('keeps startup/health independent of lazy signing-key initialization failure', async () => {

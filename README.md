@@ -859,7 +859,21 @@ không native cause/PEM/path logs, không cache key set dở dang. Public JWK ch
 `kty`, `kid`, `alg`, `use`, `n`, `e`; private key chỉ dành cho nội bộ Identity Server.
 
 Placeholder paths trong `.env.example`/Compose không được load lúc startup hay
-`GET /health`. Chưa có key generation/rotation, claims, JWT token response hoặc
+`GET /health`. Chưa có key generation/rotation, JWT token response hoặc
 JWKS/Discovery endpoint; `/oauth/token` thành công vẫn trả staged 204. Phải provision
 key files bên ngoài trước khi dùng signing capability; không commit private key.
 Tests dùng ephemeral keys và cleanup temporary files, không cần operational key.
+
+## 31. Internal access-token claim capability
+
+`TokensModule` cung cấp `AccessTokenClaimsService.build(...)`, chỉ dựng đúng payload
+`iss/sub/aud/iat/exp/scope/roles/permissions`, chưa ký hay trả token. Issuer lấy từ
+config; subject UUID và audience explicit do trusted caller cung cấp. Time dùng
+một clock instant, NumericDate seconds; TTL từ access-token config (default 600s)
+hoặc positive safe-integer override. Scope dùng granted values giữ nguyên order;
+roles/permissions là input riêng (được []), không resolve RBAC hay map từ scope.
+Chi tiết validation/defensive copies nằm ở `IMPLEMENTATION_SPEC.md` mục 9.
+
+Capability không đọc DB/Redis/network/key files, không import/call signing service
+hay JOSE. M9.1-M9.3 mới persist/resolve RBAC, M9.4 mới cung cấp resolved values.
+`/oauth/token` vẫn staged 204; signing/response thuộc M6.7, không có JWKS/Discovery.

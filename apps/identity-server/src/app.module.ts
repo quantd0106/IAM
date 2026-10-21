@@ -6,6 +6,7 @@ import { SessionModule } from './session/session.module.js';
 import { ClientRegistryModule } from './client-registry/client-registry.module.js';
 import { OAuthModule } from './oauth/oauth.module.js';
 import { SigningKeyModule } from './security/signing/signing-key.module.js';
+import { TokensModule } from './tokens/tokens.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { SigningKeyModule } from './security/signing/signing-key.module.js';
     ClientRegistryModule,
     OAuthModule,
     SigningKeyModule,
+    TokensModule,
   ],
   controllers: [HealthController],
 })

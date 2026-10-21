@@ -695,7 +695,7 @@ Acceptance criteria:
 
 ## M6.6 — Access-token claim builder
 
-Status: [ ]
+Status: [x]
 
 Claims:
 

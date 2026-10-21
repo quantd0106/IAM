@@ -220,7 +220,7 @@ authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
 M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-M6.4/M6.5 preserve the temporary 204; later token issuance will replace it. GET /oauth/token remains absent.
+M6.4-M6.6 preserve the temporary 204; M6.7 token issuance will replace it. GET /oauth/token remains absent.
 
 M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
 The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
@@ -594,8 +594,8 @@ M6.5 adds the internal non-global SigningKeyModule/SigningKeyService under
 `src/security/signing`, using the runtime `jose` library. AppModule imports this
 module, which exports only the service and has no controllers or startup hooks.
 OAuthModule/token processing does not request signing keys yet: M6.1 -> M6.4 ->
-M6.2 -> M6.3 still ends in empty HTTP 204, not a signed token. No claims builder,
-JWKS/Discovery endpoint, key generation, provisioning or rotation is introduced.
+M6.2 -> M6.3 still ends in empty HTTP 204, not a signed token. M6.5 adds no claims
+builder, JWKS/Discovery endpoint, key generation, provisioning or rotation.
 
 Read the existing validated JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH and JWT_KEY_ID
 only on first explicit service access. The existing config trims these three
@@ -675,6 +675,49 @@ Rules:
 - `roles` is an array
 - `permissions` is an array
 - do not put secrets or sensitive internal metadata in tokens
+
+M6.6 adds internal non-global TokensModule/AccessTokenClaimsService under
+`src/tokens`. Its synchronous build({subject, audience, scopes, roles, permissions,
+ttlSeconds?}) returns exactly iss/sub/aud/iat/exp/scope/roles/permissions, constructed
+explicitly. Unknown input properties are ignored and cannot become claims or override
+issuer. No kid/alg/typ/jti, nonce/auth_time/session/profile data, credentials, code,
+PKCE, refresh token, request or persistence metadata is included.
+
+Issuer is the existing validated ConfigService ISSUER_URL value, preserved exactly;
+the caller cannot supply it. Subject is an explicit trusted internal User.id,
+validated using the existing z.uuid() convention without lookup/normalization.
+Audience is required explicit trusted input, a nonempty scalar opaque string:
+preserve case/Unicode/whitespace exactly, including whitespace-only nonempty strings.
+No URI parsing, aliases or inference from client_id, redirect, scope/prefix, Host,
+origin or issuer; no Client audience column or client/resource mapping is introduced.
+
+Capture Date.now() once; require nonnegative safe-integer milliseconds, compute
+iat = floor(nowMs / 1000), exp = iat + ttlSeconds. Both claims are integer seconds;
+reject unsafe expiry arithmetic. TTL defaults to configured ACCESS_TOKEN_TTL_SECONDS
+(the existing 600-second default), never another token/session TTL. An explicit
+trusted ttlSeconds override must be a positive safe-integer number and is used
+exactly; no coercion, skew policy or second clock read.
+
+Scopes are already granted input, validated by the existing code-state grantedScopes
+schema (at least one RFC 6749 scope token) and joined with one SP. Preserve order,
+case and any supplied duplicates; do not recalculate intersection, sort/deduplicate,
+add/drop grants or map scopes to permissions. M5.3's grant calculation remains the
+earlier deduplication authority; M6.6 does not reinterpret already-granted state.
+
+Roles and permissions are separate explicit trusted arrays of nonempty opaque
+strings, with [] valid. Preserve exact values/order/duplicates and return defensive
+copies; do not trim, normalize, sort, infer roles/permissions or hard-code demo
+privileges. M6.6 defines only the payload capability. M9.1-M9.3 own RBAC persistence/
+resolution; M9.4 later supplies real resolved roles/permissions to token issuance.
+
+The builder has only ConfigService and schema validation dependencies: no Prisma,
+Redis, HTTP/network, filesystem, SigningKeyService or JOSE signing. Malformed input,
+config/clock/internal failures throw only `Access token claims build failed.` with
+no native cause or logs of subject/audience/grants/RBAC/config values. TokensModule
+has no controller; AppModule imports it without invoking build or loading keys.
+M6.7 alone combines these claims with M6.5 keys/JOSE protected headers/signing and
+the token response. Current /oauth/token still ends in empty HTTP 204, no-store,
+no Location/Set-Cookie; M6.5 stays lazy/unchanged and JWKS/Discovery remain absent.
 
 Resource APIs validate locally:
 
