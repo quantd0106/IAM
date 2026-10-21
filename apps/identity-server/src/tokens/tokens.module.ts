@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AccessTokenClaimsService } from './access-token-claims.service.js';
+import { AccessTokenIssuerService } from './access-token-issuer.service.js';
+import { SigningKeyModule } from '../security/signing/signing-key.module.js';
 
 @Module({
-  imports: [ConfigModule],
-  providers: [AccessTokenClaimsService],
-  exports: [AccessTokenClaimsService],
+  imports: [ConfigModule, SigningKeyModule],
+  providers: [AccessTokenClaimsService, AccessTokenIssuerService],
+  exports: [AccessTokenClaimsService, AccessTokenIssuerService],
 })
 export class TokensModule {}

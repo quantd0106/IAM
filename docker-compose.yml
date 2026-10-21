@@ -10,11 +10,16 @@ services:
       DATABASE_URL: postgresql://iam:iam_dev_password@postgres:5432/iam?schema=public
       REDIS_URL: redis://redis:6379
       ISSUER_URL: http://localhost:3000
-      # Validation placeholders only; not real JWT/TOTP cryptographic material.
-      JWT_PRIVATE_KEY_PATH: ./dev-keys/placeholder-private.pem
-      JWT_PUBLIC_KEY_PATH: ./dev-keys/placeholder-public.pem
+      # Keys provisioned explicitly on host; absent keys do not block health/startup.
+      JWT_PRIVATE_KEY_PATH: ./dev-keys/private.pem
+      JWT_PUBLIC_KEY_PATH: ./dev-keys/public.pem
       JWT_KEY_ID: development-placeholder
       TOTP_ENCRYPTION_KEY: development-only-placeholder-not-a-real-key
+    volumes:
+      - type: bind
+        source: ./apps/identity-server/dev-keys
+        target: /workspace/apps/identity-server/dev-keys
+        read_only: true
     ports:
       - '127.0.0.1:3000:3000'
     depends_on:

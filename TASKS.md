@@ -718,7 +718,7 @@ Acceptance criteria:
 
 ## M6.7 — Authorization-code token response
 
-Status: [ ]
+Status: [x]
 
 Return:
 

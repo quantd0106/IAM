@@ -6,6 +6,7 @@ const oidcScopes = ['openid', 'profile', 'email'] as const;
 const demoClients = [
   {
     clientId: 'student-spa',
+    accessTokenAudience: 'student-api',
     name: 'Student SPA',
     clientType: 'PUBLIC',
     redirectUri: 'http://localhost:3200/callback',
@@ -13,6 +14,7 @@ const demoClients = [
   },
   {
     clientId: 'banking-web',
+    accessTokenAudience: 'banking-api',
     name: 'Banking Web / BFF',
     clientType: 'CONFIDENTIAL',
     redirectUri: 'http://localhost:3100/auth/callback',
@@ -20,6 +22,7 @@ const demoClients = [
   },
   {
     clientId: 'admin-portal',
+    accessTokenAudience: 'identity-server',
     name: 'Admin Portal / BFF',
     clientType: 'CONFIDENTIAL',
     redirectUri: 'http://localhost:3300/auth/callback',
@@ -49,6 +52,7 @@ export async function applyDemoRegistry(
       name: demo.name,
       clientType: demo.clientType,
       enabled: true,
+      accessTokenAudience: demo.accessTokenAudience,
       ...(demo.clientType === 'PUBLIC' ? { clientSecretHash: null } : {}),
     };
     const client = await transaction.client.upsert({

@@ -12,6 +12,8 @@ const row = {
   clientType: 'CONFIDENTIAL' as const,
   enabled: true,
   clientSecretHash: hash,
+  accessTokenTtl: 321,
+  accessTokenAudience: ' exact-audience ',
 };
 const invalid = { ok: false, error: 'invalid_client' };
 const basic = (id = row.clientId, value = secret): string =>
@@ -37,7 +39,13 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
       await service.authenticateTokenClient(clientId, basic(clientId)),
     ).toEqual({
       ok: true,
-      client: { id: row.id, clientId, clientType: 'CONFIDENTIAL' },
+      client: {
+        id: row.id,
+        clientId,
+        clientType: 'CONFIDENTIAL',
+        accessTokenTtl: row.accessTokenTtl,
+        accessTokenAudience: row.accessTokenAudience,
+      },
     });
     expect(findUnique).toHaveBeenCalledExactlyOnceWith({
       where: { clientId },
@@ -47,6 +55,8 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
         clientType: true,
         enabled: true,
         clientSecretHash: true,
+        accessTokenTtl: true,
+        accessTokenAudience: true,
       },
     });
     expect(argon2.verify).toHaveBeenCalledExactlyOnceWith(hash, secret);
@@ -63,7 +73,13 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
       await service.authenticateTokenClient(row.clientId, undefined),
     ).toEqual({
       ok: true,
-      client: { id: row.id, clientId: row.clientId, clientType: 'PUBLIC' },
+      client: {
+        id: row.id,
+        clientId: row.clientId,
+        clientType: 'PUBLIC',
+        accessTokenTtl: row.accessTokenTtl,
+        accessTokenAudience: row.accessTokenAudience,
+      },
     });
     expect(argon2.verify).not.toHaveBeenCalled();
   });

@@ -68,14 +68,15 @@ model Session {
 }
 
 model Client {
-  id               String     @id @default(uuid()) @db.Uuid
-  clientId         String     @unique @map("client_id")
-  name             String
-  clientType       ClientType @map("client_type")
-  clientSecretHash String?    @map("client_secret_hash")
-  enabled          Boolean    @default(true)
-  accessTokenTtl   Int        @default(600) @map("access_token_ttl")
-  refreshTokenTtl  Int        @default(2592000) @map("refresh_token_ttl")
+  id                  String     @id @default(uuid()) @db.Uuid
+  clientId            String     @unique @map("client_id")
+  name                String
+  clientType          ClientType @map("client_type")
+  clientSecretHash    String?    @map("client_secret_hash")
+  enabled             Boolean    @default(true)
+  accessTokenTtl      Int        @default(600) @map("access_token_ttl")
+  accessTokenAudience String?    @map("access_token_audience")
+  refreshTokenTtl     Int        @default(2592000) @map("refresh_token_ttl")
 
   redirectUris  ClientRedirectUri[]
   allowedScopes ClientScope[]

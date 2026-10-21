@@ -17,6 +17,7 @@ coverage
 **/generated
 **/*.pem
 **/*.key
+**/dev-keys
 **/*.log
 .vscode
 .idea

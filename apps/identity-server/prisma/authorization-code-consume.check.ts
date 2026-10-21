@@ -11,6 +11,7 @@ import {
   authorizationCodeStateSchema,
   type AuthorizationCodeState,
 } from '../src/oauth/authorization-code.state.js';
+import { accessTokenVerifier } from './access-token.check-support.js';
 
 const invalidGrant = {
   error: 'invalid_grant',
@@ -56,6 +57,9 @@ async function checkConsumption(): Promise<void> {
   const opaqueClientId = ' owned e\u0301 CLIENT ' + randomUUID() + ' ';
   let clientCreated = false;
   let cases = 0;
+  let verifyToken: Awaited<ReturnType<typeof accessTokenVerifier>>;
+  const grants = new Map<string, AuthorizationCodeState>();
+  const issuance = new Map<string, { audience: string; ttlSeconds: number }>();
   const keyFor = (code: string): string =>
     buildRedisKey(
       'oauth:code',
@@ -84,6 +88,7 @@ async function checkConsumption(): Promise<void> {
       'Owned fixture collision.',
     );
     owned.add(key);
+    grants.set(code, state);
     return { code, key, state };
   };
   const post = async (
@@ -109,9 +114,14 @@ async function checkConsumption(): Promise<void> {
     assert.equal(response.headers.get('set-cookie'), null);
     assert.equal(response.headers.get('location'), null);
     const text = await response.text();
-    if (response.status === 204)
-      assert.ok(text === '', 'Staged success must be empty.');
-    else {
+    if (response.status === 200) {
+      const state = grants.get(code)!;
+      await verifyToken(response, text, {
+        subject: state.userId,
+        scopes: state.grantedScopes,
+        ...issuance.get(clientId)!,
+      });
+    } else {
       assert.ok(
         response.status === 400 || response.status === 500,
         'Unexpected consume status.',
@@ -182,19 +192,34 @@ async function checkConsumption(): Promise<void> {
     );
   };
   try {
+    verifyToken = await accessTokenVerifier(env);
     await redis.connect();
     const dbBefore = await snapshotDb();
     const codesBefore = await snapshotCodes();
     await db.query(
-      'INSERT INTO clients (id, client_id, name, client_type, enabled) VALUES ($1, $2, $3, $4, true)',
+      'INSERT INTO clients (id, client_id, name, client_type, enabled, access_token_audience) VALUES ($1, $2, $3, $4, true, $5)',
       [
         ownedClientId,
         opaqueClientId,
         'Consumption probe owned PUBLIC',
         'PUBLIC',
+        'owned-consumption-api',
       ],
     );
     clientCreated = true;
+    const metadata = await db.query<{
+      client_id: string;
+      access_token_audience: string;
+      access_token_ttl: number;
+    }>(
+      'SELECT client_id, access_token_audience, access_token_ttl FROM clients WHERE client_id = ANY($1::text[])',
+      [['student-spa', opaqueClientId]],
+    );
+    for (const row of metadata.rows)
+      issuance.set(row.client_id, {
+        audience: row.access_token_audience,
+        ttlSeconds: row.access_token_ttl,
+      });
     const first = await fixture({ ...base(), codeChallenge: validChallenge });
     assert.equal(
       await post(
@@ -203,7 +228,7 @@ async function checkConsumption(): Promise<void> {
         first.state.redirectUri,
         validVerifier,
       ),
-      204,
+      200,
     );
     assert.equal(await redis.exists(first.key), 0);
     assert.equal(
@@ -233,7 +258,7 @@ async function checkConsumption(): Promise<void> {
         ),
       ),
     );
-    assert.equal(results.filter((status) => status === 204).length, 1);
+    assert.equal(results.filter((status) => status === 200).length, 1);
     assert.equal(results.filter((status) => status === 400).length, 11);
     assert.equal(await redis.exists(concurrent.key), 0);
 
@@ -300,7 +325,7 @@ async function checkConsumption(): Promise<void> {
         exact.state.redirectUri,
         ' short wrong verifier ',
       ),
-      204,
+      200,
     );
     assert.equal(await redis.exists(exact.key), 0); // null challenge: no PKCE requirement or Basic auth
     const opaque = await fixture(
@@ -311,7 +336,7 @@ async function checkConsumption(): Promise<void> {
     );
     assert.equal(
       await post(opaque.code, opaque.state.clientId, opaque.state.redirectUri),
-      204,
+      200,
     );
     assert.equal(await redis.exists(opaque.key), 0);
 
@@ -366,7 +391,7 @@ async function checkConsumption(): Promise<void> {
         max.state.redirectUri,
         maxVerifier,
       ),
-      204,
+      200,
     );
     assert.equal(await redis.exists(max.key), 0);
     for (const verifier of [undefined, '', ' malformed e\u0301 %2F+ ']) {
@@ -378,7 +403,7 @@ async function checkConsumption(): Promise<void> {
           noPkce.state.redirectUri,
           verifier,
         ),
-        204,
+        200,
       );
       assert.equal(await redis.exists(noPkce.key), 0);
     }
@@ -427,7 +452,7 @@ async function checkConsumption(): Promise<void> {
         'Owned code remains after consume/expiry.',
       );
     console.log(
-      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; enabled PUBLIC resolution, no tokens; 8 DB fingerprints and unrelated code snapshots restored; owned client removed; zero owned keys remain.`,
+      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; enabled PUBLIC resolution, signed JWT verification; 8 DB fingerprints and unrelated code snapshots restored; owned client removed; zero owned keys remain.`,
     );
   } finally {
     try {

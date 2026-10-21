@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit --incremental false && tsc --project tsconfig.prisma.json",
     "prisma": "prisma",
     "prisma:generate": "prisma generate",
+    "dev-keys:generate": "tsx prisma/dev-keys.generate.ts",
     "client:check": "tsx prisma/client.check.ts",
     "client-redirect-uri:check": "tsx prisma/client-redirect-uri.check.ts",
     "scope:check": "tsx prisma/scope.check.ts",

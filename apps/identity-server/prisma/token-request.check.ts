@@ -131,13 +131,10 @@ async function checkTokenRequests(): Promise<void> {
       status === 401 ? 'Basic realm="oauth/token"' : null,
     );
     const text = await response.text();
-    if (status === 204)
-      assert.ok(text === '', 'Staged token success must be empty.');
-    else
-      assert.ok(
-        text === JSON.stringify(expected),
-        'Token error must be fixed and sanitized.',
-      );
+    assert.ok(
+      text === JSON.stringify(expected),
+      'Token error must be fixed and sanitized.',
+    );
     cases++;
   };
   try {

@@ -29,6 +29,7 @@ import { ClientAuthenticationService } from '../client-registry/client-authentic
 import { IdpSessionStateService } from '../session/idp-session-state.service.js';
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
 import * as crypto from 'node:crypto';
+import { AccessTokenIssuerService } from '../tokens/access-token-issuer.service.js';
 
 vi.mock('node:crypto', async (original) => {
   const actual = await original<typeof import('node:crypto')>();
@@ -80,7 +81,13 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
   const authenticateTokenClient = vi.fn((clientId: string) =>
     Promise.resolve({
       ok: true as const,
-      client: { id: 'fixture-client', clientId, clientType: 'PUBLIC' as const },
+      client: {
+        id: 'fixture-client',
+        clientId,
+        clientType: 'PUBLIC' as const,
+        accessTokenTtl: 600,
+        accessTokenAudience: 'fixture-api',
+      },
     }),
   );
   const getAndDelete = vi.fn<RedisService['getAndDelete']>();
@@ -134,6 +141,15 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       .useValue({ issueSecret: unexpected })
       .overrideProvider(ClientAuthenticationService)
       .useValue({ authenticateTokenClient })
+      .overrideProvider(AccessTokenIssuerService)
+      .useValue({
+        issue: () =>
+          Promise.resolve({
+            accessToken: 'isolated-issuer-fixture',
+            expiresIn: 600,
+            scope: 'openid profile',
+          }),
+      })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch: unexpected })
       .overrideProvider(AuthorizationService)
@@ -200,7 +216,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     path = '/oauth/token',
   ): Promise<void> {
     const authCalls = authenticateTokenClient.mock.calls.length;
-    if (status === 204 || expected === invalidGrant || status === 500) {
+    if (status === 200 || expected === invalidGrant || status === 500) {
       expectedHashes++;
       expectedConsumes++;
     }
@@ -212,7 +228,13 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     expect(response.headers['cache-control']).toBe('no-store');
     expect(response.headers.location).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
-    if (status === 204) expect(response.text).toBe('');
+    if (status === 200)
+      expect(response.body).toEqual({
+        access_token: 'isolated-issuer-fixture',
+        token_type: 'Bearer',
+        expires_in: 600,
+        scope: 'openid profile',
+      });
     else expect(response.body).toEqual(expected);
     if (status === 400 && (expected === invalid || expected === unsupported))
       expect(authenticateTokenClient).toHaveBeenCalledTimes(authCalls);
@@ -221,14 +243,14 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
   it('unknown fake code reaches one GETDEL then invalid_grant; verifier remains optional on matching state', async () => {
     await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
     put();
-    await check(new URLSearchParams(valid).toString(), 204);
+    await check(new URLSearchParams(valid).toString(), 200);
     put();
     await check(
       new URLSearchParams({
         ...valid,
         code_verifier: ' short +%2F e\u0301 ',
       }).toString(),
-      204,
+      200,
     );
   });
 
@@ -243,7 +265,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     const validate = vi.spyOn(app.get(TokenRequestService), 'validate');
     put(input);
     const consume = vi.spyOn(app.get(AuthorizationCodeService), 'consume');
-    await check(new URLSearchParams(input).toString(), 204);
+    await check(new URLSearchParams(input).toString(), 200);
     expect(validate).toHaveBeenCalledExactlyOnceWith(input, form);
     expect(validate.mock.results[0].value).toEqual({
       ok: true,
@@ -300,7 +322,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       expectedHashes++;
       await check(
         new URLSearchParams({ ...valid, code_verifier: input }).toString(),
-        204,
+        200,
       );
       expect(entries.size).toBe(0);
       const hashes = vi.mocked(crypto.createHash).mock;
@@ -363,7 +385,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
           ...valid,
           ...(input === undefined ? {} : { code_verifier: input }),
         }).toString(),
-        204,
+        200,
       );
     },
   );
@@ -449,7 +471,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       .set('Content-Type', form)
       .set('Cookie', 'iam.sid=synthetic-cookie')
       .send(new URLSearchParams(valid).toString())
-      .expect(204);
+      .expect(200);
   });
 
   it('does not introduce GET token requests', async () => {
@@ -461,7 +483,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
 
   it('burns code on success/replay and exact client/redirect mismatches', async () => {
     put();
-    await check(new URLSearchParams(valid).toString(), 204);
+    await check(new URLSearchParams(valid).toString(), 200);
     await check(new URLSearchParams(valid).toString(), 400, invalidGrant);
     for (const change of [
       { client_id: 'other-client' },
@@ -522,7 +544,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     expect(response.headers['set-cookie']).toBeUndefined();
   });
 
-  it('concurrent identical requests yield exactly one 204 and all others invalid_grant', async () => {
+  it('concurrent identical requests yield exactly one 200 and all others invalid_grant', async () => {
     put();
     expectedHashes += 10;
     expectedConsumes += 10;
@@ -535,13 +557,19 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       ),
     );
     expect(
-      responses.filter((response) => response.status === 204),
+      responses.filter((response) => response.status === 200),
     ).toHaveLength(1);
     expect(
       responses.filter((response) => response.status === 400),
     ).toHaveLength(9);
     for (const response of responses) {
-      if (response.status === 204) expect(response.text).toBe('');
+      if (response.status === 200)
+        expect(response.body).toEqual({
+          access_token: 'isolated-issuer-fixture',
+          token_type: 'Bearer',
+          expires_in: 600,
+          scope: 'openid profile',
+        });
       else expect(response.body).toEqual(invalidGrant);
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.headers.location).toBeUndefined();

@@ -22,7 +22,10 @@ type State = {
   redirects: ClientRedirectUri[];
   assignments: ClientScope[];
 };
-type CanonicalClient = Pick<Client, 'name' | 'clientType' | 'enabled'> & {
+type CanonicalClient = Pick<
+  Client,
+  'name' | 'clientType' | 'enabled' | 'accessTokenAudience'
+> & {
   clientSecretHash?: null;
 };
 const mocks = vi.hoisted(() => ({
@@ -252,6 +255,7 @@ describe('seed runner (isolated transactional persistence)', () => {
           clientType,
           enabled,
           accessTokenTtl,
+          accessTokenAudience,
           refreshTokenTtl,
         }) => ({
           clientId,
@@ -259,6 +263,7 @@ describe('seed runner (isolated transactional persistence)', () => {
           clientType,
           enabled,
           accessTokenTtl,
+          accessTokenAudience,
           refreshTokenTtl,
         }),
       ),
@@ -269,6 +274,7 @@ describe('seed runner (isolated transactional persistence)', () => {
         clientType: 'PUBLIC',
         enabled: true,
         accessTokenTtl: 600,
+        accessTokenAudience: 'student-api',
         refreshTokenTtl: 2592000,
       },
       {
@@ -277,6 +283,7 @@ describe('seed runner (isolated transactional persistence)', () => {
         clientType: 'CONFIDENTIAL',
         enabled: true,
         accessTokenTtl: 600,
+        accessTokenAudience: 'banking-api',
         refreshTokenTtl: 2592000,
       },
       {
@@ -285,6 +292,7 @@ describe('seed runner (isolated transactional persistence)', () => {
         clientType: 'CONFIDENTIAL',
         enabled: true,
         accessTokenTtl: 600,
+        accessTokenAudience: 'identity-server',
         refreshTokenTtl: 2592000,
       },
     ]);
@@ -331,6 +339,7 @@ describe('seed runner (isolated transactional persistence)', () => {
     student.clientType = 'CONFIDENTIAL';
     student.clientSecretHash = 'unit-only invalid public marker';
     student.accessTokenTtl = 123;
+    student.accessTokenAudience = 'outdated-audience';
     student.refreshTokenTtl = 456;
     const unrelated: Client = {
       ...student,
@@ -365,6 +374,7 @@ describe('seed runner (isolated transactional persistence)', () => {
     });
     await runSeed(url);
     expect(student.name).toBe('Student SPA');
+    expect(student.accessTokenAudience).toBe('student-api');
     expect(student.enabled).toBe(true);
     expect(student.clientType).toBe('PUBLIC');
     expect(student.clientSecretHash === null).toBe(true);

@@ -575,7 +575,9 @@ trước khi Identity Server khởi động. Kiểm tra `http://localhost:3000/h
 HTTP 200, `{"status":"ok"}`.
 
 Compose cấp cấu hình development riêng với hostname `postgres`/`redis`, issuer
-public `http://localhost:3000` và JWT/TOTP placeholders (không phải key thật).
+public `http://localhost:3000` và TOTP placeholder (không phải key thật).
+JWT keys được provision explicit (mục 32), mount read-only từ host, không COPY vào
+image. Chưa có keys vẫn startup/health được; token signing sẽ fail closed.
 Không cần copy `.env` cho Compose; `.env.example` vẫn dành cho chạy trên host.
 Không chạy seed hay migrations khi khởi động.
 
@@ -740,7 +742,7 @@ issue và state gốc, body rỗng, không Set-Cookie hoặc subject data.
 Idle activity/TTL có thể advance theo M3, không đổi absolute expiry hay PostgreSQL.
 Chưa có login UI/return_to/continuation state: gọi existing POST /auth/login rồi
 gửi lại ĐÚNG authorize request ban đầu với iam.sid để resume. Logout/revocation
-ngăn cookie đó tiếp tục authorize. M6.1 validation và M6.2 atomic code consumption đã có; token issuance chưa triển khai.
+ngăn cookie đó tiếp tục authorize. M6.7 hiện đổi code lấy signed access token qua POST /oauth/token.
 Client/redirect được kiểm tra exact. Sau PKCE, allowed scopes được đọc từ
 ClientScope bằng internal Client.id; mọi requested scope phải thuộc allowed set
 exact, nếu không trả `invalid_scope` (400), không drop scope rồi tiếp tục.
@@ -771,7 +773,7 @@ userId/authTime lấy từ central session, PKCE/nonce vắng mặt hợp lệ d
 Expiry = một issue instant + 120000 ms; TTL cố định 120 giây. Collision không ghi đè,
 retry fresh code tối đa 3 lần, lỗi trả cùng safe 500. Raw code chỉ transient nội bộ,
 không nằm trong Redis/log/error/HTTP body; M5.6 chỉ đưa raw code vào validated
-Location. M6.2 đã có consume/GETDEL, M6.3 đã verify PKCE; token issuance chưa triển khai.
+Location. M6.2 consume/GETDEL, M6.3 verify PKCE và M6.7 issue access token tại token endpoint.
 
 Sau build và Compose startup chạy `pnpm --filter identity-server authorize:check`.
 Probe kiểm tra M5.1-M5.3 regressions trước session, login -> cookie -> same request
@@ -818,9 +820,11 @@ khi stored challenge khác null; tính SHA-256 ASCII/base64url không padding v�
 exact, không plain fallback/trim/normalize/decode lại. Thiếu/rỗng/sai syntax/sai verifier
 cùng trả fixed `invalid_grant` và code vẫn bị burn; retry không cứu được code.
 Challenge null không yêu cầu PKCE và bỏ qua verifier optional; không bỏ qua M6.4 client auth.
-Auth, consume và PKCE thành công mới trả tạm **204 body rỗng**, `Cache-Control: no-store`, không
-Location/Set-Cookie. Chưa phát token;
-các bước sau sẽ thay staged 204. `GET /oauth/token` vẫn 404.
+Auth thành công phải có registry audience không rỗng và TTL positive safe integer
+trước GETDEL; thiếu/hỏng trả safe 500, không burn code, không phải invalid_client.
+Consume/PKCE thành công tiếp tục M6.7: HTTP 200 JSON access token (mục 32),
+`Cache-Control: no-store`, `Pragma: no-cache`, không Location/Set-Cookie.
+`GET /oauth/token` vẫn 404.
 
 Sau build/Compose startup chạy `pnpm --filter identity-server token-request:check`:
 synthetic malformed/unsupported requests phải giữ nguyên matching code sentinel;
@@ -848,8 +852,8 @@ safe metadata projection, không gọi secret issuance và PUBLIC không chạy 
 
 ## 30. Internal signing-key capability
 
-`SigningKeyModule` cung cấp lazy `SigningKeyService` bằng `jose`, chưa tích hợp vào
-token issuance. Dùng ba biến JWT key hiện có; private phải là RSA PKCS#8 PEM, public
+`SigningKeyModule` cung cấp lazy `SigningKeyService` bằng `jose`, được M6.7 gọi sau
+consume/PKCE. Dùng ba biến JWT key hiện có; private phải là RSA PKCS#8 PEM, public
 là SPKI PEM cùng key pair, modulus tối thiểu 2048 bit. Chi tiết canonical/API/JWK
 nằm ở `IMPLEMENTATION_SPEC.md` mục 8.
 
@@ -858,16 +862,15 @@ hợp lệ được cache suốt lifetime; lỗi chỉ trả `Signing key initia
 không native cause/PEM/path logs, không cache key set dở dang. Public JWK chỉ có
 `kty`, `kid`, `alg`, `use`, `n`, `e`; private key chỉ dành cho nội bộ Identity Server.
 
-Placeholder paths trong `.env.example`/Compose không được load lúc startup hay
-`GET /health`. Chưa có key generation/rotation, JWT token response hoặc
-JWKS/Discovery endpoint; `/oauth/token` thành công vẫn trả staged 204. Phải provision
-key files bên ngoài trước khi dùng signing capability; không commit private key.
+Key paths trong `.env.example`/Compose không được load lúc startup hay
+`GET /health`. Provision development explicit theo mục 32; không có production
+rotation hoặc JWKS/Discovery endpoint, không commit private key.
 Tests dùng ephemeral keys và cleanup temporary files, không cần operational key.
 
 ## 31. Internal access-token claim capability
 
 `TokensModule` cung cấp `AccessTokenClaimsService.build(...)`, chỉ dựng đúng payload
-`iss/sub/aud/iat/exp/scope/roles/permissions`, chưa ký hay trả token. Issuer lấy từ
+`iss/sub/aud/iat/exp/scope/roles/permissions`; chỉ issuer M6.7 mới ký/trả token. Issuer lấy từ
 config; subject UUID và audience explicit do trusted caller cung cấp. Time dùng
 một clock instant, NumericDate seconds; TTL từ access-token config (default 600s)
 hoặc positive safe-integer override. Scope dùng granted values giữ nguyên order;
@@ -876,4 +879,42 @@ Chi tiết validation/defensive copies nằm ở `IMPLEMENTATION_SPEC.md` mục 
 
 Capability không đọc DB/Redis/network/key files, không import/call signing service
 hay JOSE. M9.1-M9.3 mới persist/resolve RBAC, M9.4 mới cung cấp resolved values.
-`/oauth/token` vẫn staged 204; signing/response thuộc M6.7, không có JWKS/Discovery.
+M6.7 kết hợp claims và signing qua service riêng; chưa có JWKS/Discovery.
+
+## 32. Authorization-code access-token issuance (M6.7)
+
+Thứ tự: M6.1 shape/grant → M6.4 client auth → validate registry audience/TTL
+→ M6.2 GETDEL/binding/expiry → M6.3 PKCE → claims → JOSE RS256 → HTTP 200.
+Client auth chọn audience/TTL cùng query hiện có, chỉ trả metadata an toàn.
+`Client.accessTokenAudience` nullable không default/backfill; NULL vẫn authenticate
+được nhưng chưa cấu hình issuance. Explicit seed converges:
+student-spa → student-api; banking-web → banking-api; admin-portal → identity-server.
+Seed giữ nguyên IDs, secrets, redirects/scopes và TTL; unrelated records không đổi.
+
+`AccessTokenIssuerService` dùng subject/grantedScopes từ consumed state, audience/TTL
+từ authenticated client và roles=[]/permissions=[] cho tới M9.4. JWT có đúng tám
+claims mục 31, header đúng `{alg: 'RS256', kid}`; không typ hoặc clock thứ hai.
+Response JSON đúng bốn field: `access_token`, `token_type: "Bearer"`,
+`expires_in: exp-iat`, `scope`. Không ID/refresh token, kể cả scope openid.
+Key/claims/signing failure sau GETDEL trả fixed 500 `server_error` /
+`Token request failed.`; code vẫn burn, retry trả invalid_grant, không restore.
+
+Provision local development/test một lần trước live signing probes:
+
+```bash
+pnpm --filter identity-server dev-keys:generate
+```
+
+Lệnh explicit tạo RSA-2048 PKCS#8 `dev-keys/private.pem` và SPKI `dev-keys/public.pem`
+trong package; thư mục ignored, từ chối overwrite kể cả partial provisioning.
+Không chạy tự động khi install/build/start/seed. Private mode 0600 và directory 0700
+nơi được hỗ trợ; trên Windows cần bảo vệ ACL thư mục. Đây không phải production
+key management/rotation. Compose mount read-only; không đưa PEM vào image/Git.
+Nếu `.env` cũ dùng placeholder filenames, cập nhật hai JWT paths theo `.env.example`
+hoặc override bằng shell; giữ JWT_KEY_ID nhất quán giữa server và probe.
+
+Sau migration, explicit seed, build và Compose rebuild, chạy ba M6 probes ở mục 29.
+Các probe success verify chữ ký bằng public dev key với algorithms=['RS256'],
+audience/TTL/grants/subject/header/claim allowlists; không in compact JWT.
+Vẫn giữ fingerprint 8 bảng, unrelated Redis code value/absolute expiry và cleanup
+chỉ fixture sở hữu. Không mở rộng full authorize/login E2E M6.8.

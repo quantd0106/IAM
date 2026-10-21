@@ -183,6 +183,15 @@ capability does not repeat enabled validation or make the two reads atomic.
 OAuth error mapping/authorization policy remain M5+ work, not internal lookup
 errors or new HTTP endpoints.
 
+### M6.7 access-token audience configuration
+
+M6.7 extends the historical M4 Client baseline with nullable exact text
+`accessTokenAudience` mapped to `access_token_audience`, without a default or
+migration backfill. NULL is an authenticated but unconfigured issuance client,
+not invalid credentials. Explicit demo seed now converges only these audiences:
+student-spa -> student-api; banking-web -> banking-api; admin-portal -> identity-server.
+Existing IDs, TTLs, secrets, redirects, scopes and unrelated records stay unchanged.
+
 ---
 
 ## 4. OAuth / OIDC Endpoints
@@ -220,11 +229,13 @@ authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
 M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-M6.4-M6.6 preserve the temporary 204; M6.7 token issuance will replace it. GET /oauth/token remains absent.
+M6.4-M6.6 preserved temporary 204; M6.7 replaces it with signed access-token JSON.
+GET /oauth/token remains absent.
 
 M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
 The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
-resolution/authentication -> M6.2 code hashing/GETDEL/binding -> M6.3 PKCE -> empty 204.
+resolution/authentication -> M6.7 issuance metadata validation -> M6.2 code
+hashing/GETDEL/binding -> M6.3 PKCE -> claims -> RS256 signing -> HTTP 200.
 Resolve the exact body client_id against Client.clientId: no trim, case conversion,
 Unicode normalization, alias or fallback. Unknown/disabled clients fail authentication.
 PUBLIC clients (Student SPA) require no secret and proceed only without an Authorization
@@ -238,7 +249,8 @@ components must be nonempty. Compare decoded Basic client_id with body client_id
 exactly; do not transform the already framework-decoded body or trim/normalize/repair
 either credential. Other schemes and malformed/missing credentials are rejected.
 Verify the presented secret using installed Argon2 against the persisted Argon2id hash.
-The stored hash stays private to this capability; return only id/clientId/clientType.
+The stored hash stays private to this capability; M6.7 success returns only
+id/clientId/clientType/accessTokenTtl/accessTokenAudience, selected in that same query.
 ClientLookupService's safe metadata projection and ClientSecretService's issuance/
 rotation lifecycle are unchanged; authentication never calls issueSecret().
 
@@ -251,8 +263,8 @@ GETDEL or PKCE is attempted on authentication failure: the code/value/expiry rem
 available for a later correctly authenticated attempt. Unexpected DB/Argon2/internal
 failures, including a corrupt stored hash, use fixed token HTTP 500 server_error above,
 without native causes or private details; they also precede consumption. Do not log
-credentials, hashes, challenges or authorization codes. No token issuance or secret
-delivery channel is added. Canonical demo seed hashes remain unchanged; local probes
+credentials, hashes, challenges or authorization codes. M6.4 added no token issuance
+or secret delivery channel. Canonical demo seed hashes remain unchanged; local probes
 use only isolated known-secret Argon2id fixtures and clean up their own state.
 
 M6.2 extends the same OAuth-internal AuthorizationCodeService with
@@ -274,11 +286,10 @@ error_description: 'Invalid authorization grant.'}. Hash/Redis/JSON/schema/clock
 unexpected failures return the existing fixed token HTTP 500 server_error above.
 After GETDEL returns a value, every failure burns the code permanently, including
 wrong bindings and corrupted state; a lost Redis reply is never retried/restored.
-Success returns only validated consumed state internally and temporarily HTTP 204
-with empty body, Cache-Control: no-store, no Location and no Set-Cookie. Concurrent
-requests have exactly one winner. Successful consumption now continues into M6.3
-below before returning the staged 204. The consume capability itself remains
-verifier-agnostic and performs no client authentication/secret access itself. No token issuance.
+Success returns only validated consumed state internally. M6.2 initially returned
+temporary empty HTTP 204; M6.7 now continues through M6.3 and signed-token issuance.
+Concurrent requests have exactly one winner. The consume capability itself remains
+verifier-agnostic and performs no client authentication/secret access or signing.
 
 Supported:
 
@@ -511,9 +522,9 @@ stored codeChallenge is null, PKCE is not required and any optional scalar verif
 is ignored; this does not classify/authenticate the client. Structural non-string,
 array/object/repeated verifier values remain M6.1 invalid_request before GETDEL.
 Unexpected crypto/internal failures use the existing fixed HTTP 500 server_error
-with description Token request failed., without causes or sensitive logs. Success
-still returns empty 204/no-store/no Location/no Set-Cookie. M6.4 authenticates the client
-before consumption; later token issuance remains unimplemented. No storage-format or M5.2 policy change.
+with description Token request failed., without causes or sensitive logs. M6.7
+continues successful PKCE into issuance, replacing the historical empty 204.
+M6.4 authenticates the client before consumption. No storage-format or M5.2 policy change.
 
 Calculation:
 
@@ -593,8 +604,7 @@ Signing key policy:
 M6.5 adds the internal non-global SigningKeyModule/SigningKeyService under
 `src/security/signing`, using the runtime `jose` library. AppModule imports this
 module, which exports only the service and has no controllers or startup hooks.
-OAuthModule/token processing does not request signing keys yet: M6.1 -> M6.4 ->
-M6.2 -> M6.3 still ends in empty HTTP 204, not a signed token. M6.5 adds no claims
+M6.7 now requests signing keys only after successful consumption/PKCE. M6.5 added no claims
 builder, JWKS/Discovery endpoint, key generation, provisioning or rotation.
 
 Read the existing validated JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH and JWT_KEY_ID
@@ -689,7 +699,8 @@ validated using the existing z.uuid() convention without lookup/normalization.
 Audience is required explicit trusted input, a nonempty scalar opaque string:
 preserve case/Unicode/whitespace exactly, including whitespace-only nonempty strings.
 No URI parsing, aliases or inference from client_id, redirect, scope/prefix, Host,
-origin or issuer; no Client audience column or client/resource mapping is introduced.
+origin or issuer. M6.6 itself introduced no Client audience column or mapping;
+M6.7 supplies the explicit registered audience described above.
 
 Capture Date.now() once; require nonnegative safe-integer milliseconds, compute
 iat = floor(nowMs / 1000), exp = iat + ttlSeconds. Both claims are integer seconds;
@@ -716,8 +727,38 @@ config/clock/internal failures throw only `Access token claims build failed.` wi
 no native cause or logs of subject/audience/grants/RBAC/config values. TokensModule
 has no controller; AppModule imports it without invoking build or loading keys.
 M6.7 alone combines these claims with M6.5 keys/JOSE protected headers/signing and
-the token response. Current /oauth/token still ends in empty HTTP 204, no-store,
-no Location/Set-Cookie; M6.5 stays lazy/unchanged and JWKS/Discovery remain absent.
+the token response; M6.5 stays lazy/unchanged and JWKS/Discovery remain absent.
+
+### M6.7 issuance boundary
+
+Before hashing/GETDEL, validate authenticated registry audience as a nonempty
+scalar string (opaque, no trimming/normalization/inference/fallback) and access
+TTL as positive safe-integer seconds. Missing/corrupt metadata returns fixed
+HTTP 500 server_error / Token request failed., never invalid_client, without
+consuming the code. No second registry lookup or request-supplied audience exists.
+
+After GETDEL, binding/expiry and PKCE, AccessTokenIssuerService in TokensModule
+builds claims using consumed userId/grantedScopes, authenticated client audience/TTL,
+and explicit roles=[]/permissions=[] until M9.4. TokensModule now imports
+SigningKeyModule. Sign the exact claims with jose.SignJWT and the M6.5 private key,
+protected header exactly {alg: 'RS256', kid: configured key ID}. No typ, additional
+claims, claim-replacing helpers or second issuance clock. Return internally only
+accessToken, expiresIn=claims.exp-claims.iat and scope=claims.scope.
+
+POST /oauth/token returns HTTP 200 application/json with exactly access_token,
+token_type='Bearer', expires_in and scope; Cache-Control: no-store and
+Pragma: no-cache, without Location/Set-Cookie. No ID/refresh token, even for openid.
+Claims/key/signing/internal failures after consumption return the same sanitized
+500; code stays permanently burned, with no restoration/retry write. A retry of
+that code returns invalid_grant before reaching claims/keys/signing. Existing
+401 invalid_client + Basic challenge and 400 invalid_grant contracts stay unchanged.
+
+Explicit development/test-only `dev-keys:generate` provisions RSA-2048 PKCS#8 private
+and SPKI public PEM under ignored apps/identity-server/dev-keys, refusing overwrite.
+Private permissions are restricted where supported; Windows operators must protect
+the local directory ACL. Compose mounts it read-only, never copies PEM into images.
+This command never runs on startup/install/build/seed and is not production rotation.
+Without provisioned keys basic startup/health still works; issuance fails closed.
 
 Resource APIs validate locally:
 

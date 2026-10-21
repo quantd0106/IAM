@@ -11,6 +11,7 @@ import { applyDemoRegistry } from './seed.runner.js';
 const expected = [
   {
     clientId: 'student-spa',
+    accessTokenAudience: 'student-api',
     name: 'Student SPA',
     clientType: 'PUBLIC',
     redirectUri: 'http://localhost:3200/callback',
@@ -18,6 +19,7 @@ const expected = [
   },
   {
     clientId: 'banking-web',
+    accessTokenAudience: 'banking-api',
     name: 'Banking Web / BFF',
     clientType: 'CONFIDENTIAL',
     redirectUri: 'http://localhost:3100/auth/callback',
@@ -25,6 +27,7 @@ const expected = [
   },
   {
     clientId: 'admin-portal',
+    accessTokenAudience: 'identity-server',
     name: 'Admin Portal / BFF',
     clientType: 'CONFIDENTIAL',
     redirectUri: 'http://localhost:3300/auth/callback',
@@ -133,6 +136,7 @@ async function checkSeed(): Promise<void> {
             assert.equal(client.name, demo.name);
             assert.equal(client.clientType, demo.clientType);
             assert.equal(client.enabled, true);
+            assert.equal(client.accessTokenAudience, demo.accessTokenAudience);
             const existing = existingClients.find(
               (row) => row.id === client.id,
             );

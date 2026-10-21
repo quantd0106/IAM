@@ -7,7 +7,13 @@ import { parseClientSecretBasic } from './client-secret-basic.js';
 export type TokenClientAuthenticationResult =
   | {
       ok: true;
-      client: { id: string; clientId: string; clientType: ClientType };
+      client: {
+        id: string;
+        clientId: string;
+        clientType: ClientType;
+        accessTokenTtl: number;
+        accessTokenAudience: string | null;
+      };
     }
   | { ok: false; error: 'invalid_client' };
 
@@ -17,6 +23,8 @@ const authenticationSelection = {
   clientType: true,
   enabled: true,
   clientSecretHash: true,
+  accessTokenTtl: true,
+  accessTokenAudience: true,
 } as const satisfies Prisma.ClientSelect;
 const invalidClient = { ok: false, error: 'invalid_client' } as const;
 
@@ -59,6 +67,8 @@ export class ClientAuthenticationService {
           id: client.id,
           clientId: client.clientId,
           clientType: client.clientType,
+          accessTokenTtl: client.accessTokenTtl,
+          accessTokenAudience: client.accessTokenAudience,
         },
       };
     } catch {

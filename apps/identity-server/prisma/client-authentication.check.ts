@@ -8,6 +8,7 @@ import { createClient, RESP_TYPES } from 'redis';
 import { validateEnvironment } from '../src/config/env.schema.js';
 import { authorizationCodeStateSchema } from '../src/oauth/authorization-code.state.js';
 import { buildRedisKey } from '../src/redis/redis-key.js';
+import { accessTokenVerifier } from './access-token.check-support.js';
 
 const invalidClient = {
   error: 'invalid_client',
@@ -66,12 +67,21 @@ async function checkClientAuthentication(): Promise<void> {
     type: name === 'student' ? 'PUBLIC' : 'CONFIDENTIAL',
     enabled: name !== 'disabled',
     hasHash: !['student', 'no-hash'].includes(name),
+    audience:
+      name === 'student'
+        ? 'student-api'
+        : name === 'banking'
+          ? 'banking-api'
+          : 'identity-server',
+    ttlSeconds: name === 'student' ? 123 : name === 'banking' ? 321 : 600,
   }));
   const [student, banking, admin, disabled, noHash, opaque] = clients;
   assert.ok(student && banking && admin && disabled && noHash && opaque);
   const created = new Set<string>();
   const ownedKeys = new Set<string>();
   let cases = 0;
+  let verifyToken: Awaited<ReturnType<typeof accessTokenVerifier>>;
+  const subjects = new Map<string, string>();
   const basic = (clientId: string, value = secret): string =>
     'bAsIc ' +
     Buffer.from(
@@ -149,10 +159,11 @@ async function checkClientAuthentication(): Promise<void> {
       redirect_uri: 'http://localhost/m64-owned-callback',
       code_verifier: verifier,
     };
+    const subject = randomUUID();
     const value = JSON.stringify(
       authorizationCodeStateSchema.parse({
         clientId,
-        userId: randomUUID(),
+        userId: subject,
         redirectUri: body.redirect_uri,
         grantedScopes: ['openid', 'profile'],
         codeChallenge,
@@ -166,6 +177,7 @@ async function checkClientAuthentication(): Promise<void> {
       'Owned key collision.',
     );
     ownedKeys.add(key);
+    subjects.set(code, subject);
     return { body, key, value, expires: await redis.pExpireTime(key) };
   };
   const post = async (
@@ -196,13 +208,19 @@ async function checkClientAuthentication(): Promise<void> {
       status === 401 ? 'Basic realm="oauth/token"' : null,
     );
     const text = await response.text();
-    assert.ok(
-      text ===
-        (status === 204
-          ? ''
-          : JSON.stringify(status === 401 ? invalidClient : invalidGrant)),
-      'Authentication/grant response must be fixed and sanitized.',
-    );
+    if (status === 200) {
+      const client = clients.find((item) => item.clientId === body.client_id)!;
+      await verifyToken(response, text, {
+        subject: subjects.get(body.code)!,
+        audience: client.audience,
+        ttlSeconds: client.ttlSeconds,
+        scopes: ['openid', 'profile'],
+      });
+    } else
+      assert.ok(
+        text === JSON.stringify(status === 401 ? invalidClient : invalidGrant),
+        'Authentication/grant response must be fixed and sanitized.',
+      );
     assert.ok(
       ![secret, hash, body.code, verifier, challenge].some((value) =>
         text.includes(value),
@@ -222,12 +240,13 @@ async function checkClientAuthentication(): Promise<void> {
     }
   };
   try {
+    verifyToken = await accessTokenVerifier(env);
     await redis.connect();
     const beforeDb = await snapshotDb();
     const beforeCodes = await snapshotCodes();
     for (const client of clients) {
       await db.query(
-        'INSERT INTO clients (id, client_id, name, client_type, enabled, client_secret_hash) VALUES ($1, $2, $3, $4, $5, $6)',
+        'INSERT INTO clients (id, client_id, name, client_type, enabled, client_secret_hash, access_token_audience, access_token_ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
         [
           client.id,
           client.clientId,
@@ -235,6 +254,8 @@ async function checkClientAuthentication(): Promise<void> {
           client.type,
           client.enabled,
           client.hasHash ? hash : null,
+          client.audience,
+          client.ttlSeconds,
         ],
       );
       created.add(client.id);
@@ -245,7 +266,7 @@ async function checkClientAuthentication(): Promise<void> {
       await post(
         item.body,
         client.type === 'PUBLIC' ? undefined : basic(client.clientId),
-        204,
+        200,
       );
       assert.equal(await redis.exists(item.key), 0);
       await post(
@@ -304,7 +325,7 @@ async function checkClientAuthentication(): Promise<void> {
       await post(
         item.body,
         publicCase ? undefined : basic(banking.clientId),
-        204,
+        200,
       );
       assert.equal(await redis.exists(item.key), 0);
     }
@@ -325,7 +346,7 @@ async function checkClientAuthentication(): Promise<void> {
     await post(
       { ...noPkce.body, code_verifier: 'not-required' },
       basic(admin.clientId),
-      204,
+      200,
     );
     assert.ok(
       (await snapshotDb()) === fixtureDb,
@@ -343,7 +364,7 @@ async function checkClientAuthentication(): Promise<void> {
       'Unrelated code state changed.',
     );
     console.log(
-      `M6.4 client authentication check passed (${cases} HTTP cases): PUBLIC/Banking/Admin/opaque Basic success; wrong/missing/malformed/unsupported/mismatch/unknown/disabled/PUBLIC Basic retain code+expiry and valid retry succeeds; PKCE still burns; null challenge still requires confidential auth; 8 DB fingerprints restored, unrelated codes unchanged, owned fixtures removed. No secrets printed or canonical seed changed.`,
+      `M6.4 client authentication check passed (${cases} HTTP cases): PUBLIC/Banking/Admin/opaque Basic success; wrong/missing/malformed/unsupported/mismatch/unknown/disabled/PUBLIC Basic retain code+expiry and valid retry succeeds; PKCE still burns; signed JWTs verified with explicit audience/per-client TTL; null challenge still requires confidential auth; 8 DB fingerprints restored, unrelated codes unchanged, owned fixtures removed. No secrets printed or canonical seed changed.`,
     );
   } finally {
     try {

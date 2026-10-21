@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import {
   afterEach,
@@ -12,7 +12,6 @@ import {
 } from 'vitest';
 import { validateEnvironment, type Environment } from '../config/env.schema.js';
 import { authorizationCodeStateSchema } from '../oauth/authorization-code.state.js';
-import { TokensModule } from './tokens.module.js';
 import {
   AccessTokenClaimsService,
   type AccessTokenClaimsInput,
@@ -145,12 +144,14 @@ describe('AccessTokenClaimsService M6.6 payload-only capability', () => {
     expect((error.stack ?? '').includes('private-input-canary')).toBe(false);
   };
 
-  it('exports only a non-global Config-only service, with no controllers or eager build', async () => {
+  it('needs only ConfigService and performs no eager build or signing imports', async () => {
     const get = vi.spyOn(config, 'getOrThrow');
-    const module = await Test.createTestingModule({ imports: [TokensModule] })
-      .overrideProvider(ConfigService)
-      .useValue(config)
-      .compile();
+    const module = await Test.createTestingModule({
+      providers: [
+        AccessTokenClaimsService,
+        { provide: ConfigService, useValue: config },
+      ],
+    }).compile();
     try {
       // Nest DI logs are not claims logs and contain no input/config values.
       for (const log of logs) {
@@ -167,21 +168,6 @@ describe('AccessTokenClaimsService M6.6 payload-only capability', () => {
         ).toBe(false);
         log.mockClear();
       }
-      expect(Reflect.getMetadata('imports', TokensModule) as unknown).toEqual([
-        ConfigModule,
-      ]);
-      expect(Reflect.getMetadata('providers', TokensModule) as unknown).toEqual(
-        [AccessTokenClaimsService],
-      );
-      expect(Reflect.getMetadata('exports', TokensModule) as unknown).toEqual([
-        AccessTokenClaimsService,
-      ]);
-      expect(
-        (Reflect.getMetadata('controllers', TokensModule) as unknown) ?? [],
-      ).toEqual([]);
-      expect(
-        Reflect.getMetadata('__module:global__', TokensModule) as unknown,
-      ).not.toBe(true);
       expect(get).not.toHaveBeenCalled();
       expect(module.get(AccessTokenClaimsService).build(input).sub).toBe(
         subject,

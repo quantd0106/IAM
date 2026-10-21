@@ -27,6 +27,9 @@ import { ScopeLookupService } from '../client-registry/scope-lookup.service.js';
 import { ClientSecretService } from '../client-registry/client-secret.service.js';
 import { IdpSessionStateService } from '../session/idp-session-state.service.js';
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
+import { SigningKeyService } from '../security/signing/signing-key.service.js';
+import { AccessTokenClaimsService } from '../tokens/access-token-claims.service.js';
+import { generateKeyPair, jwtVerify, type CryptoKey } from 'jose';
 
 vi.mock('argon2', async (original) => {
   const actual = await original<typeof import('argon2')>();
@@ -62,6 +65,10 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
   let app: INestApplication<Server>;
   let hash: string;
   let logs: MockInstance[];
+  let privateKey: CryptoKey;
+  let publicKey: CryptoKey;
+  const getPrivateSigningKey = vi.fn<() => Promise<CryptoKey>>();
+  const getKeyId = vi.fn<() => Promise<string>>();
   const hashCode = vi.mocked(crypto.createHash);
   const unexpected = vi.fn(() => {
     throw new Error('Unexpected issuance/write/session/lookup operation.');
@@ -75,6 +82,8 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       clientType: 'PUBLIC' | 'CONFIDENTIAL';
       enabled: boolean;
       clientSecretHash: string | null;
+      accessTokenAudience: string | null;
+      accessTokenTtl: number;
     }
   >();
   const findUnique = vi.fn();
@@ -111,7 +120,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
   const post = async (
     body: Record<string, string>,
     header?: string,
-    status = 204,
+    status = 200,
     expected?: object,
   ) => {
     const pending = request(app.getHttpServer())
@@ -127,8 +136,46 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
     expect(response.headers['www-authenticate']).toBe(
       status === 401 ? 'Basic realm="oauth/token"' : undefined,
     );
-    if (status === 204) expect(response.text).toBe('');
-    else expect(response.body).toEqual(expected);
+    expect(response.headers.pragma).toBe('no-cache');
+    if (status === 200) {
+      const token = response.body as {
+        access_token: string;
+        expires_in: number;
+        scope: string;
+        token_type: string;
+      };
+      expect(Object.keys(response.body as object).sort()).toEqual([
+        'access_token',
+        'expires_in',
+        'scope',
+        'token_type',
+      ]);
+      expect(token.token_type).toBe('Bearer');
+      expect(response.headers['content-type']).toMatch(/^application\/json/);
+      const { payload, protectedHeader } = await jwtVerify(
+        token.access_token,
+        publicKey,
+        { algorithms: ['RS256'], issuer: 'http://localhost:3000' },
+      );
+      expect(protectedHeader).toEqual({ alg: 'RS256', kid: 'test-key' });
+      const client = clients.get(body.client_id)!;
+      expect(payload).toEqual({
+        iss: 'http://localhost:3000',
+        sub: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+        aud: client.accessTokenAudience,
+        iat: payload.iat,
+        exp: payload.exp,
+        scope: 'openid',
+        roles: [],
+        permissions: [],
+      });
+      expect(
+        Number.isInteger(payload.iat) && Number.isInteger(payload.exp),
+      ).toBe(true);
+      expect(payload.exp! - payload.iat!).toBe(client.accessTokenTtl);
+      expect(token.expires_in).toBe(client.accessTokenTtl);
+      expect(token.scope).toBe(payload.scope);
+    } else expect(response.body).toEqual(expected);
     for (const value of [secret, hash, body.code, verifier, challenge].filter(
       Boolean,
     ))
@@ -136,7 +183,15 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
     return response;
   };
   beforeAll(async () => {
+    ({ privateKey, publicKey } = await generateKeyPair('RS256', {
+      modulusLength: 2048,
+    }));
     hash = await realArgon.hash(secret, { type: realArgon.argon2id });
+    const config = new ConfigService({
+      COOKIE_NAME: 'iam.sid',
+      COOKIE_SECURE: false,
+      ISSUER_URL: 'http://localhost:3000',
+    });
     const module = await Test.createTestingModule({
       imports: [OAuthModule],
       providers: [{ provide: APP_FILTER, useClass: RegisterValidationFilter }],
@@ -163,17 +218,17 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       .useValue({ getAllowedScopeNames: unexpected })
       .overrideProvider(ClientSecretService)
       .useValue({ issueSecret: unexpected })
+      .overrideProvider(SigningKeyService)
+      .useValue({ getPrivateSigningKey, getKeyId })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch: unexpected })
       .overrideProvider(AuthorizationService)
       .useValue({ authorize: unexpected })
       .overrideProvider(AuthorizationRequestService)
       .useValue({ validate: unexpected })
-      .useMocker((token) =>
-        token === ConfigService
-          ? new ConfigService({ COOKIE_NAME: 'iam.sid', COOKIE_SECURE: false })
-          : undefined,
-      )
+      .overrideProvider(ConfigService)
+      .useValue(config)
+      .useMocker((token) => (token === ConfigService ? config : undefined))
       .compile();
     app = module.createNestApplication<INestApplication<Server>>({
       logger: false,
@@ -196,12 +251,26 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
         clientType: clientId === 'student-spa' ? 'PUBLIC' : 'CONFIDENTIAL',
         enabled: true,
         clientSecretHash: clientId === 'student-spa' ? null : hash,
+        accessTokenAudience:
+          clientId === 'student-spa'
+            ? 'student-api'
+            : clientId === 'banking-web'
+              ? 'banking-api'
+              : 'identity-server',
+        accessTokenTtl:
+          clientId === 'student-spa'
+            ? 123
+            : clientId === 'banking-web'
+              ? 321
+              : 600,
       });
     findUnique.mockImplementation(
       ({ where }: { where: { clientId: string } }) =>
         Promise.resolve(clients.get(where.clientId) ?? null),
     );
     vi.mocked(argon2.verify).mockImplementation(realArgon.verify);
+    getPrivateSigningKey.mockResolvedValue(privateKey);
+    getKeyId.mockResolvedValue('test-key');
     getAndDelete.mockImplementation((key) => {
       const value = entries.get(key) ?? null;
       entries.delete(key);
@@ -356,4 +425,75 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
     );
     expect(entries.has(key)).toBe(false);
   });
+
+  it.each([
+    { accessTokenAudience: null },
+    { accessTokenAudience: '' },
+    { accessTokenAudience: undefined },
+    { accessTokenAudience: [] },
+    { accessTokenAudience: {} },
+    { accessTokenAudience: 42 },
+    ...[
+      undefined,
+      null,
+      0,
+      -1,
+      1.5,
+      '600',
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+    ].map((accessTokenTtl) => ({ accessTokenTtl })),
+  ])(
+    'invalid issuance metadata %# fails before hashing/GETDEL; valid retry succeeds',
+    async (change) => {
+      const { body, key } = fixture();
+      const client = clients.get(body.client_id)!;
+      const original = { ...client };
+      const value = entries.get(key);
+      Object.assign(client, change);
+      hashCode.mockClear();
+      await post(body, basic(body.client_id), 500, serverError);
+      expect(argon2.verify).toHaveBeenCalledOnce();
+      expect(hashCode).not.toHaveBeenCalled();
+      expect(getAndDelete).not.toHaveBeenCalled();
+      expect(getPrivateSigningKey).not.toHaveBeenCalled();
+      expect(entries.get(key)).toBe(value);
+      Object.assign(client, original);
+      await post(body, basic(body.client_id));
+    },
+  );
+
+  it('preserves opaque nonempty registry audience without normalization or request inference', async () => {
+    clients.get('student-spa')!.accessTokenAudience = '  ';
+    const { body } = fixture('student-spa');
+    await post(body);
+  });
+
+  it.each(['claims', 'private-key', 'kid', 'signing'])(
+    'sanitizes post-GETDEL %s failure, burns code and retry stops before signing',
+    async (stage) => {
+      const { body, key } = fixture();
+      const cause = new Error(
+        'private key path PEM code verifier secret native error',
+      );
+      if (stage === 'claims')
+        vi.spyOn(app.get(AccessTokenClaimsService), 'build').mockImplementation(
+          () => {
+            throw cause;
+          },
+        );
+      if (stage === 'private-key')
+        getPrivateSigningKey.mockRejectedValue(cause);
+      if (stage === 'kid') getKeyId.mockRejectedValue(cause);
+      if (stage === 'signing')
+        getPrivateSigningKey.mockResolvedValue(publicKey);
+      await post(body, basic(body.client_id), 500, serverError);
+      expect(entries.has(key)).toBe(false);
+      const calls = getPrivateSigningKey.mock.calls.length;
+      await post(body, basic(body.client_id), 400, invalidGrant);
+      expect(getPrivateSigningKey).toHaveBeenCalledTimes(calls);
+      expect(getAndDelete).toHaveBeenCalledTimes(2);
+    },
+  );
 });

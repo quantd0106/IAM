@@ -9,6 +9,7 @@ import { SessionAuthenticationModule } from '../session/session-authentication.m
 import { AuthorizationService } from './authorization.service.js';
 import { AuthorizationCodeService } from './authorization-code.service.js';
 import { RedisModule } from '../redis/redis.module.js';
+import { TokensModule } from '../tokens/tokens.module.js';
 import { HttpAdapterHost } from '@nestjs/core';
 import { createHash } from 'node:crypto';
 import type { Server } from 'node:http';
@@ -320,6 +321,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       ClientRegistryModule,
       SessionAuthenticationModule,
       RedisModule,
+      TokensModule,
     ]);
     expect(Reflect.getMetadata('controllers', OAuthModule) as unknown).toEqual([
       OAuthController,
