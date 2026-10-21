@@ -86,9 +86,10 @@ describe('M6.1 strict token request schema / no-I/O service', () => {
     };
     expect(tokenRequestSchema.parse(input)).toEqual(input);
     expect(service.validate(input, form)).toEqual({ ok: true, request: input });
-    expect(service.validate({ ...valid, code_verifier: '' }, form)).toEqual(
-      invalid,
-    );
+    expect(service.validate({ ...valid, code_verifier: '' }, form)).toEqual({
+      ok: true,
+      request: { ...valid, code_verifier: '' },
+    });
     expect(service.validate({ ...valid, code_verifier: ' ' }, form)).toEqual({
       ok: true,
       request: { ...valid, code_verifier: ' ' },

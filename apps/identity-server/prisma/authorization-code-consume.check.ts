@@ -21,6 +21,8 @@ const serverError = {
   error_description: 'Token request failed.',
 };
 const form = 'application/x-www-form-urlencoded';
+const validVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+const validChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
 async function checkConsumption(): Promise<void> {
   const env = validateEnvironment(process.env);
@@ -61,7 +63,7 @@ async function checkConsumption(): Promise<void> {
     userId: randomUUID(),
     redirectUri: 'http://localhost:3200/callback',
     grantedScopes: ['profile', 'openid'],
-    codeChallenge: 'A'.repeat(43),
+    codeChallenge: null,
     nonce: 'probe-owned-nonce',
     authTime: Date.now() - 1000,
     expiresAt: Date.now() + 120000,
@@ -180,9 +182,14 @@ async function checkConsumption(): Promise<void> {
     await redis.connect();
     const dbBefore = await snapshotDb();
     const codesBefore = await snapshotCodes();
-    const first = await fixture();
+    const first = await fixture({ ...base(), codeChallenge: validChallenge });
     assert.equal(
-      await post(first.code, first.state.clientId, first.state.redirectUri),
+      await post(
+        first.code,
+        first.state.clientId,
+        first.state.redirectUri,
+        validVerifier,
+      ),
       204,
     );
     assert.equal(await redis.exists(first.key), 0);
@@ -199,13 +206,17 @@ async function checkConsumption(): Promise<void> {
       400,
     );
 
-    const concurrent = await fixture();
+    const concurrent = await fixture({
+      ...base(),
+      codeChallenge: validChallenge,
+    });
     const results = await Promise.all(
       Array.from({ length: 12 }, () =>
         post(
           concurrent.code,
           concurrent.state.clientId,
           concurrent.state.redirectUri,
+          validVerifier,
         ),
       ),
     );
@@ -278,7 +289,7 @@ async function checkConsumption(): Promise<void> {
       ),
       204,
     );
-    assert.equal(await redis.exists(exact.key), 0); // no registry, PKCE or Basic authentication
+    assert.equal(await redis.exists(exact.key), 0); // null challenge: no PKCE requirement or Basic auth
     const opaque = await fixture(
       base(),
       120,
@@ -290,6 +301,74 @@ async function checkConsumption(): Promise<void> {
       204,
     );
     assert.equal(await redis.exists(opaque.key), 0);
+
+    for (const verifier of [
+      undefined,
+      '',
+      'A'.repeat(42),
+      'A'.repeat(129),
+      'A'.repeat(43),
+      'A'.repeat(42) + '+',
+      'A'.repeat(42) + '/',
+      'A'.repeat(42) + 'é',
+      ' ' + validVerifier,
+      validVerifier + '\n',
+      '%64' + validVerifier.slice(1),
+    ]) {
+      const rejected = await fixture({
+        ...base(),
+        codeChallenge: validChallenge,
+      });
+      assert.equal(
+        await post(
+          rejected.code,
+          rejected.state.clientId,
+          rejected.state.redirectUri,
+          verifier,
+        ),
+        400,
+      );
+      assert.equal(await redis.exists(rejected.key), 0);
+      assert.equal(
+        await post(
+          rejected.code,
+          rejected.state.clientId,
+          rejected.state.redirectUri,
+          validVerifier,
+        ),
+        400,
+      );
+    }
+    const maxVerifier = 'Ab0-._~'.repeat(19).slice(0, 128);
+    const max = await fixture({
+      ...base(),
+      codeChallenge: createHash('sha256')
+        .update(maxVerifier, 'ascii')
+        .digest('base64url'),
+    });
+    assert.equal(
+      await post(
+        max.code,
+        max.state.clientId,
+        max.state.redirectUri,
+        maxVerifier,
+      ),
+      204,
+    );
+    assert.equal(await redis.exists(max.key), 0);
+    for (const verifier of [undefined, '', ' malformed e\u0301 %2F+ ']) {
+      const noPkce = await fixture();
+      assert.equal(
+        await post(
+          noPkce.code,
+          noPkce.state.clientId,
+          noPkce.state.redirectUri,
+          verifier,
+        ),
+        204,
+      );
+      assert.equal(await redis.exists(noPkce.key), 0);
+    }
 
     for (const serialized of [
       'private-corrupt-canary{',
@@ -330,7 +409,7 @@ async function checkConsumption(): Promise<void> {
         'Owned code remains after consume/expiry.',
       );
     console.log(
-      `M6.2 consumption check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, corrupt-state fail-closed; no PKCE/client auth/tokens; 8 DB fingerprints and unrelated code snapshots unchanged; zero owned keys remain.`,
+      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; no client auth/tokens; 8 DB fingerprints and unrelated code snapshots unchanged; zero owned keys remain.`,
     );
   } finally {
     try {

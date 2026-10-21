@@ -7,7 +7,8 @@ export const tokenRequestSchema = z.strictObject({
   client_id: opaque,
   code: opaque,
   redirect_uri: opaque,
-  code_verifier: opaque.optional(),
+  // Structural validation only. M6.3 classifies empty/malformed syntax after GETDEL.
+  code_verifier: z.string().optional(),
 });
 
 export type TokenRequest = Omit<

@@ -649,7 +649,7 @@ Acceptance criteria:
 
 ## M6.3 — PKCE verification
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

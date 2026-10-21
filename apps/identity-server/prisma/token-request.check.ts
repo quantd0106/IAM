@@ -170,6 +170,11 @@ async function checkTokenRequests(): Promise<void> {
     withoutVerifier.delete('code_verifier');
     await post(withoutVerifier.toString(), 400, invalidGrant);
     await post(
+      new URLSearchParams({ ...unknown, code_verifier: '' }).toString(),
+      400,
+      invalidGrant,
+    );
+    await post(
       new URLSearchParams({
         ...unknown,
         client_id: 'unknown opaque client',
@@ -183,9 +188,11 @@ async function checkTokenRequests(): Promise<void> {
       const missing = new URLSearchParams(valid);
       missing.delete(field);
       if (field !== 'code_verifier') await post(missing.toString());
-      const empty = new URLSearchParams(valid);
-      empty.set(field, '');
-      await post(empty.toString());
+      if (field !== 'code_verifier') {
+        const empty = new URLSearchParams(valid);
+        empty.set(field, '');
+        await post(empty.toString());
+      }
       await post(`${new URLSearchParams(valid)}&${field}=duplicate`);
       await post(`${missing}&${field}[nested]=object`);
     }
@@ -270,7 +277,7 @@ async function checkTokenRequests(): Promise<void> {
       'Probe did not restore its owned sentinel.',
     );
     console.log(
-      `M6.1/M6.2 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; well-shaped unknown codes return invalid_grant; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
+      `M6.1-M6.3 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; unknown codes (including empty scalar verifier) return invalid_grant; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
     );
   } finally {
     try {

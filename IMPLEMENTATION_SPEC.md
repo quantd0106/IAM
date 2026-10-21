@@ -204,7 +204,9 @@ GET  /oidc/userinfo
 M6.1 adds POST /oauth/token inside the existing non-global OAuthModule, accepting
 only application/x-www-form-urlencoded body input. A strict schema requires nonempty
 scalar strings grant_type, client_id, code, redirect_uri; code_verifier is optional
-but must be a nonempty scalar string when supplied. Unknown/repeated/structured
+and must be a scalar string when supplied, including the empty string. Its
+non-empty/syntax checks now belong to M6.3 after consumption, not M6.1.
+Unknown/repeated/structured
 fields are rejected. Opaque framework-decoded values are preserved exactly: no
 trimming, normalization, second decoding, URI parsing or PKCE policy at this boundary.
 Shape/parser/media-type errors return HTTP 400
@@ -218,7 +220,7 @@ authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
 M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-M6.3+ integrations will replace the temporary 204. GET /oauth/token remains absent.
+M6.4+ integrations will replace the temporary 204. GET /oauth/token remains absent.
 
 M6.2 extends the same OAuth-internal AuthorizationCodeService with
 consume({code, clientId, redirectUri}): Promise<{ok: true, state: AuthorizationCodeState}
@@ -241,9 +243,9 @@ After GETDEL returns a value, every failure burns the code permanently, includin
 wrong bindings and corrupted state; a lost Redis reply is never retried/restored.
 Success returns only validated consumed state internally and temporarily HTTP 204
 with empty body, Cache-Control: no-store, no Location and no Set-Cookie. Concurrent
-requests have exactly one winner. No PKCE verification, verifier inspection, Basic
-authentication, client-secret access or token issuance is implemented. codeChallenge
-is only validated as canonical stored data and carried unchanged for future M6.3.
+requests have exactly one winner. Successful consumption now continues into M6.3
+below before returning the staged 204. The consume capability itself remains
+verifier-agnostic. No Basic authentication, client-secret access or token issuance.
 
 Supported:
 
@@ -418,7 +420,7 @@ network transaction is attempted. A request retry goes through normal validation
 and new issuance, not code reuse. Location/raw code/state are never logged.
 
 M6.2 now atomically consumes authorization-code state as described above; M5.5/M5.6
-issuance/callback behavior is unchanged. Verifier handling remains M6.3 work.
+issuance/callback behavior is unchanged. M6.3 verifier handling follows consumption.
 
 ---
 
@@ -459,6 +461,26 @@ This authorization boundary validates received challenge syntax only: no hashing
 code_verifier handling, verifier comparison, persistence, session integration,
 authorization code or token is introduced. Actual S256 calculation/verification
 belongs to M6.3 at the token endpoint, not M5.2.
+
+M6.3 runs a focused token PKCE policy only after successful M6.2 GETDEL, canonical
+state/expiry and exact client/redirect binding. A non-null stored codeChallenge
+requires code_verifier with length 43..128 and ASCII unreserved characters only
+(A-Z, a-z, 0-9, -, ., _, ~). Preserve the framework-decoded verifier exactly: no
+trim, Unicode normalization, case conversion, extra decoding or repair. Compute
+Node.js SHA-256 over ASCII verifier bytes and digest as unpadded base64url; compare
+against the exact stored challenge using the standard timing-safe comparison.
+Only S256 is implemented; no method override or plain fallback is accepted.
+
+Missing, empty, malformed or mismatched verifier returns the same fixed HTTP 400
+{error: 'invalid_grant', error_description: 'Invalid authorization grant.'}.
+The code was already consumed and is never restored, so retry also fails. When
+stored codeChallenge is null, PKCE is not required and any optional scalar verifier
+is ignored; this does not classify/authenticate the client. Structural non-string,
+array/object/repeated verifier values remain M6.1 invalid_request before GETDEL.
+Unexpected crypto/internal failures use the existing fixed HTTP 500 server_error
+with description Token request failed., without causes or sensitive logs. Success
+still returns empty 204/no-store/no Location/no Set-Cookie. M6.4 client authentication
+and later token issuance remain unimplemented. No storage-format or M5.2 policy change.
 
 Calculation:
 

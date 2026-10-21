@@ -27,6 +27,7 @@ import {
   AuthorizationCodeService,
   type AuthorizationCodeConsumeResult,
 } from './authorization-code.service.js';
+import { verifyTokenPkce } from './token-pkce.policy.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -68,19 +69,25 @@ export class OAuthController {
         HttpStatus.BAD_REQUEST,
       );
     let grant: AuthorizationCodeConsumeResult;
+    let pkceValid = false;
     try {
       grant = await this.codes.consume({
         code: result.request.code,
         clientId: result.request.client_id,
         redirectUri: result.request.redirect_uri,
       });
+      if (grant.ok)
+        pkceValid = verifyTokenPkce(
+          grant.state.codeChallenge,
+          result.request.code_verifier,
+        );
     } catch {
       throw new HttpException(
         { error: 'server_error', error_description: 'Token request failed.' },
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    if (!grant.ok)
+    if (!grant.ok || !pkceValid)
       throw new HttpException(
         {
           error: 'invalid_grant',
@@ -88,7 +95,7 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    // Temporary M6.2 success only. PKCE/client authentication/token issuance follow later.
+    // Temporary M6.3 success only. Client authentication/token issuance follow later.
   }
 
   @Get('authorize')

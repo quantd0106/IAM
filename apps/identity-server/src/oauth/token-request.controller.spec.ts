@@ -65,8 +65,10 @@ const serverError = {
   error: 'server_error',
   error_description: 'Token request failed.',
 };
+const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+const challenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
-describe('POST /oauth/token M6.1 validation + M6.2 consumption (real parser + OAuthModule)', () => {
+describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real parser + OAuthModule)', () => {
   let app: INestApplication<Server>;
   let logs: MockInstance[];
   const unexpected = vi.fn(() => {
@@ -86,7 +88,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption (real parser + OA
         userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
         redirectUri: input.redirect_uri,
         grantedScopes: ['openid', 'profile'],
-        codeChallenge: 'A'.repeat(43),
+        codeChallenge: null,
         nonce: 'opaque-nonce',
         authTime: Date.now() - 1000,
         expiresAt: Date.now() + 120000,
@@ -266,12 +268,128 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption (real parser + OA
   );
 
   it.each([
-    '',
     'code_verifier=a&code_verifier=b',
     'code_verifier[]=a',
     'code_verifier[nested]=a',
-  ])('rejects ambiguous/empty optional verifier %j', async (suffix) => {
-    await check(`${new URLSearchParams(valid)}&${suffix || 'code_verifier='}`);
+  ])('rejects ambiguous/structured optional verifier %j', async (suffix) => {
+    await check(`${new URLSearchParams(valid)}&${suffix}`);
+  });
+
+  it.each([verifier, 'Ab0-._~'.repeat(19).slice(0, 128)])(
+    'accepts exact 43/128-character S256 verifier only after consume (%#)',
+    async (input) => {
+      put(valid, {
+        codeChallenge: realCrypto
+          .createHash('sha256')
+          .update(input, 'ascii')
+          .digest('base64url'),
+      });
+      expectedHashes++;
+      await check(
+        new URLSearchParams({ ...valid, code_verifier: input }).toString(),
+        204,
+      );
+      expect(entries.size).toBe(0);
+      const hashes = vi.mocked(crypto.createHash).mock;
+      expect(hashes.invocationCallOrder[0]).toBeLessThan(
+        getAndDelete.mock.invocationCallOrder[0],
+      );
+      expect(getAndDelete.mock.invocationCallOrder[0]).toBeLessThan(
+        hashes.invocationCallOrder[1],
+      );
+      expect(getAndDelete).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    undefined,
+    '',
+    'A'.repeat(42),
+    'A'.repeat(129),
+    'A'.repeat(43),
+    'A'.repeat(42) + '+',
+    'A'.repeat(42) + '/',
+    'A'.repeat(42) + '=',
+    'A'.repeat(42) + 'é',
+    ' ' + verifier,
+    verifier + '\n',
+    '%64' + verifier.slice(1),
+  ])(
+    'PKCE missing/empty/malformed/wrong verifier returns identical invalid_grant and burns code (%#)',
+    async (input) => {
+      put(valid, { codeChallenge: challenge });
+      if (
+        input !== undefined &&
+        input.length >= 43 &&
+        input.length <= 128 &&
+        !/[^A-Za-z0-9._~-]/.test(input)
+      )
+        expectedHashes++;
+      const body = {
+        ...valid,
+        ...(input === undefined ? {} : { code_verifier: input }),
+      };
+      await check(new URLSearchParams(body).toString(), 400, invalidGrant);
+      expect(entries.size).toBe(0);
+      // A correct verifier cannot rescue an already-consumed grant.
+      await check(
+        new URLSearchParams({ ...valid, code_verifier: verifier }).toString(),
+        400,
+        invalidGrant,
+      );
+      expect(getAndDelete).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([undefined, '', ' malformed e\u0301 %2F+ ', verifier])(
+    'null challenge requires no PKCE regardless of optional scalar verifier (%#)',
+    async (input) => {
+      put();
+      await check(
+        new URLSearchParams({
+          ...valid,
+          ...(input === undefined ? {} : { code_verifier: input }),
+        }).toString(),
+        204,
+      );
+    },
+  );
+
+  it('does not verify/hash PKCE when M6.2 binding has failed', async () => {
+    put(valid, { codeChallenge: challenge });
+    await check(
+      new URLSearchParams({
+        ...valid,
+        client_id: 'wrong-client',
+        code_verifier: verifier,
+      }).toString(),
+      400,
+      invalidGrant,
+    );
+    expect(entries.size).toBe(0);
+  });
+
+  it('sanitizes a PKCE crypto failure after GETDEL and still burns the code', async () => {
+    put(valid, { codeChallenge: challenge });
+    vi.mocked(crypto.createHash)
+      .mockImplementationOnce(realCrypto.createHash)
+      .mockImplementationOnce(() => {
+        throw new Error('private verifier/challenge/code canary', {
+          cause: new Error('private cause'),
+        });
+      });
+    expectedHashes++;
+    await check(
+      new URLSearchParams({ ...valid, code_verifier: verifier }).toString(),
+      500,
+      serverError,
+    );
+    expect(entries.size).toBe(0);
+    await check(
+      new URLSearchParams({ ...valid, code_verifier: verifier }).toString(),
+      400,
+      invalidGrant,
+    );
   });
 
   it.each([
