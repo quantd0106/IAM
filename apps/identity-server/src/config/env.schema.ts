@@ -43,10 +43,11 @@ export const environmentSchema = z
     REFRESH_TOKEN_TTL_SECONDS: positiveInteger.default(2592000),
     SESSION_IDLE_TTL_SECONDS: positiveInteger.default(1800),
     SESSION_ABSOLUTE_TTL_SECONDS: positiveInteger.default(28800),
+    // M6.5 lazily validates RSA files/pair/strength; process health stays independent.
     JWT_PRIVATE_KEY_PATH: nonEmptyString,
     JWT_PUBLIC_KEY_PATH: nonEmptyString,
     JWT_KEY_ID: nonEmptyString,
-    // Encoding/strength and key-file existence belong to later cryptographic tasks.
+    // TOTP encoding/strength remains deferred to its encryption task.
     TOTP_ENCRYPTION_KEY: z.string().refine((value) => value.trim().length > 0),
     COOKIE_NAME: cookieName.default('iam.sid'),
     COOKIE_SECURE: z

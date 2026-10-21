@@ -7,6 +7,7 @@ import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { RedisService } from './redis/redis.service.js';
+import { SigningKeyService } from './security/signing/signing-key.service.js';
 
 describe('Identity Server', () => {
   let app: INestApplication<Server>;
@@ -75,6 +76,25 @@ describe('Identity Server', () => {
       .expect(200)
       .expect({ status: 'ok' });
   });
+
+  it('keeps startup/health independent of lazy signing-key initialization failure', async () => {
+    const keys = app.get(SigningKeyService);
+    expect(keys).toBeInstanceOf(SigningKeyService);
+    await expect(keys.getPublicJwk()).rejects.toThrowError(
+      new Error('Signing key initialization failed.'),
+    );
+    await request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect({ status: 'ok' });
+  });
+
+  it.each(['/.well-known/jwks.json', '/.well-known/openid-configuration'])(
+    'does not add the future HTTP endpoint %s',
+    async (path) => {
+      await request(app.getHttpServer()).get(path).expect(404);
+    },
+  );
 
   it('keeps process health available when registration cannot reach PostgreSQL', async () => {
     const response = await request(app.getHttpServer())

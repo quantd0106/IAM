@@ -845,3 +845,21 @@ vẫn cần confidential auth. Probe chỉ tạo/xóa UUID-owned clients/codes, 
 8 bảng DB và giữ nguyên unrelated codes; không thay canonical seed hashes hay giải quyết
 one-time demo secret delivery. Unit/HTTP tests cover DB/Argon2 faults, no logs/leaks,
 safe metadata projection, không gọi secret issuance và PUBLIC không chạy Argon2.
+
+## 30. Internal signing-key capability
+
+`SigningKeyModule` cung cấp lazy `SigningKeyService` bằng `jose`, chưa tích hợp vào
+token issuance. Dùng ba biến JWT key hiện có; private phải là RSA PKCS#8 PEM, public
+là SPKI PEM cùng key pair, modulus tối thiểu 2048 bit. Chi tiết canonical/API/JWK
+nằm ở `IMPLEMENTATION_SPEC.md` mục 8.
+
+Lần gọi đầu load/validate pair; concurrent calls chia sẻ một initialization. Bộ key
+hợp lệ được cache suốt lifetime; lỗi chỉ trả `Signing key initialization failed.`,
+không native cause/PEM/path logs, không cache key set dở dang. Public JWK chỉ có
+`kty`, `kid`, `alg`, `use`, `n`, `e`; private key chỉ dành cho nội bộ Identity Server.
+
+Placeholder paths trong `.env.example`/Compose không được load lúc startup hay
+`GET /health`. Chưa có key generation/rotation, claims, JWT token response hoặc
+JWKS/Discovery endpoint; `/oauth/token` thành công vẫn trả staged 204. Phải provision
+key files bên ngoài trước khi dùng signing capability; không commit private key.
+Tests dùng ephemeral keys và cleanup temporary files, không cần operational key.

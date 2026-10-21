@@ -684,7 +684,7 @@ Acceptance criteria:
 
 ## M6.5 — RS256 signing-key service
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

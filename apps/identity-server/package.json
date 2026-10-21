@@ -41,6 +41,7 @@
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "argon2": "0.45.1",
+    "jose": "6.2.12",
     "pg": "^8.23.1",
     "redis": "6.3.0",
     "reflect-metadata": "^0.2.2",

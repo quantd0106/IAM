@@ -220,7 +220,7 @@ authentication or PKCE verification. Unexpected failures return fixed HTTP 500
 {error: 'server_error', error_description: 'Token request failed.'} without causes.
 M6.2 implements atomic authorization-code consumption/binding; M6.3 owns PKCE verification;
 M6.4 owns confidential-client authentication; M6.5+ own signing/claims/token issuance.
-M6.4 preserves the temporary 204; M6.5+ integrations will replace it. GET /oauth/token remains absent.
+M6.4/M6.5 preserve the temporary 204; later token issuance will replace it. GET /oauth/token remains absent.
 
 M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
 The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
@@ -589,6 +589,54 @@ Signing key policy:
 - access token and ID Token include matching `kid`
 - use established JOSE/JWT libraries
 - do not implement RSA/JWS manually
+
+M6.5 adds the internal non-global SigningKeyModule/SigningKeyService under
+`src/security/signing`, using the runtime `jose` library. AppModule imports this
+module, which exports only the service and has no controllers or startup hooks.
+OAuthModule/token processing does not request signing keys yet: M6.1 -> M6.4 ->
+M6.2 -> M6.3 still ends in empty HTTP 204, not a signed token. No claims builder,
+JWKS/Discovery endpoint, key generation, provisioning or rotation is introduced.
+
+Read the existing validated JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH and JWT_KEY_ID
+only on first explicit service access. The existing config trims these three
+strings and requires nonempty values; preserve the resulting kid exactly, including
+case/Unicode, without another normalization policy. Relative paths resolve from the
+Identity Server process working directory. Missing/unreadable files do not affect
+construction, basic startup or process /health; development placeholder paths remain
+valid configuration until this capability is explicitly requested.
+
+Canonical inputs are an unencrypted RSA PKCS#8 PEM private key
+(`-----BEGIN PRIVATE KEY-----`) and a matching RSA SPKI PEM public key
+(`-----BEGIN PUBLIC KEY-----`), minimum 2048-bit modulus. Import both with JOSE for
+RS256 only. Reject EC/symmetric keys, certificates, PKCS#1/encrypted formats,
+malformed inputs, weak RSA keys or anything not importable for RS256. The cached
+private CryptoKey is non-extractable and used only by trusted in-process consumers;
+no API returns raw private PEM or a private JWK.
+
+Derive the public KeyObject from the imported private CryptoKey using Node's
+established KeyObject.from/createPublicKey APIs. Check its RSA type/modulus strength,
+export only its public JWK metadata, and compare n/e exactly with JOSE's public-key
+JWK export. Both parameters must match before any getter succeeds. No hand-written
+ASN.1/RSA/JWS, private JWK export, or production-style JWT signature is used to
+establish pair equality.
+
+The asynchronous internal getters are getPrivateSigningKey(),
+getPublicVerificationKey(), getPublicJwk() and getKeyId(); all await the same complete
+validated key set. getPublicJwk() returns a defensive copy of exactly
+`{kty: 'RSA', kid: <configured kid>, alg: 'RS256', use: 'sig', n, e}`.
+No d/p/q/dp/dq/qi/oth or other private parameters/extra export fields cross this
+boundary. The public material is ready for later M7.2 but not exposed over HTTP.
+
+Concurrent first access shares one in-flight initialization. Read/import once and
+cache a successful complete set for this service lifetime; do not re-read files
+on future getter calls. A failed attempt publishes no partial keys, clears the
+in-flight promise and permits a later explicit retry. There is no automatic retry,
+fallback/replacement-key generation, file watcher or hot reload after success.
+Every initialization failure, including missing/invalid kid and native fs/JOSE/
+OpenSSL errors, rejects only `Signing key initialization failed.` without an
+attached cause. Do not log key contents, PEMs, private parameters, configured paths
+or native details. Tests generate ephemeral keys in owned temporary directories;
+never commit operational private keys or generate them on normal startup.
 
 ---
 
@@ -1400,8 +1448,9 @@ precedence, and validates the complete configuration before listening.
 URLs and signing/TOTP configuration are mandatory; errors identify variable names
 without printing values. Canonical security defaults above apply; `COOKIE_SECURE`
 defaults to false outside production and true in production. Production rejects
-`COOKIE_SECURE=false` and a non-HTTPS issuer. JWT key-file existence and TOTP key
-encoding/strength are validated only in their respective implementation tasks.
+`COOKIE_SECURE=false` and a non-HTTPS issuer. JWT key-file format/existence/pair/strength
+are validated lazily at the M6.5 signing-key boundary, not by startup env validation.
+TOTP key encoding/strength remains deferred to its encryption task.
 
 Never commit production secrets.
 
