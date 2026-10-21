@@ -731,7 +731,7 @@ scope
 
 ## M6.8 — Authorization-code E2E
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

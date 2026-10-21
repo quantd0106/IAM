@@ -917,4 +917,16 @@ Sau migration, explicit seed, build và Compose rebuild, chạy ba M6 probes ở
 Các probe success verify chữ ký bằng public dev key với algorithms=['RS256'],
 audience/TTL/grants/subject/header/claim allowlists; không in compact JWT.
 Vẫn giữ fingerprint 8 bảng, unrelated Redis code value/absolute expiry và cleanup
-chỉ fixture sở hữu. Không mở rộng full authorize/login E2E M6.8.
+chỉ fixture sở hữu. Full OAuth authorize/login E2E hiện có riêng ở M6.8:
+
+```bash
+pnpm --filter identity-server authorization-code-e2e:check
+```
+
+Probe dùng canonical PUBLIC student-spa, scope profile và user đăng ký qua API thật:
+register → authorize 401 → login/cookie → cùng authorize request → callback/state
+→ PKCE token → verify RS256/public key → replay invalid_grant. Cần stack/seed/keys
+đã sẵn sàng; không tự seed, generate/rotate keys hoặc follow callback tới frontend.
+Cleanup chỉ user/session/code của lần chạy; fingerprint 8 bảng và unrelated Redis
+values/absolute expiry phải giữ nguyên. Chạy trên stack local yên tĩnh, không in
+password/cookie/code/verifier/JWT. Đây là OAuth E2E, chưa có OIDC/ID/refresh token.

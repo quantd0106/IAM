@@ -1542,6 +1542,30 @@ Never commit production secrets.
 
 ## 26. Test Boundaries
 
+M6.8 adds explicit `authorization-code-e2e:check` against the running real local
+Identity Server, PostgreSQL and Redis. It uses canonical PUBLIC student-spa,
+exact http://localhost:3200/callback and only the registered opaque OAuth scope
+profile, not an OpenID Connect compliance flow. No controllers/stores/hashing/
+session/code/PKCE/signing are mocked. No canonical client or secret is modified.
+
+Register a uniquely owned identity through HTTP; valid authorize without a cookie
+returns the existing 401/no callback or code. HTTP login establishes the central
+session; repeat the identical authorize request with that cookie, without following
+the callback. Verify exact callback/state, real hash-keyed code/session binding,
+S256 exchange, and signed access-token response using the configured public key
+and JOSE RS256 verification. Replay the same exchange must return invalid_grant
+without recreating code state. No ID/refresh token; M7 endpoints remain absent.
+
+The check requires existing provisioned keys and never generates/rotates them.
+Missing/invalid public verification key yields a fixed prerequisite message without
+paths/PEMs. Password/cookie/code/verifier/JWT remain transient and never printed,
+including assertion failures. Finally log out only the proven owned session and
+remove only owned runtime keys and Session/Credential/User rows in FK order,
+recovering owned state after lost replies where possible. Compare eight full-row
+database fingerprints and bounded unrelated Redis value/absolute-expiry snapshots
+after cleanup. Run on a quiet local development stack; fail safely if unrelated
+keys are about to expire, rather than modifying/restoring unrelated data.
+
 Unit:
 
 - pure helpers/policies
