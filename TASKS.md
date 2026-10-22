@@ -766,7 +766,7 @@ Acceptance criteria:
 
 ## M7.3 — ID Token builder
 
-Status: [ ]
+Status: [x]
 
 Claims:
 

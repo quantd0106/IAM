@@ -230,8 +230,8 @@ remain unchanged in issuer; endpoint paths are deliberately root-absolute, not
 issuer-path-prefixed, and no extra route aliases/mounts are introduced. The URL API
 may canonicalize endpoint URLs but must not rewrite the issuer property.
 
-The existing global URL validator remains unchanged. At the Discovery boundary
-only, reject query/fragment components (including empty ?/#) and URL credentials
+The existing global URL validator remains unchanged. At the Discovery boundary,
+reject query/fragment components (including empty ?/#) and URL credentials
 instead of stripping/echoing them. This avoids invalid issuer metadata or credential
 disclosure, following the no-query/no-fragment issuer requirement in
 [OpenID Connect Discovery section 3](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata).
@@ -249,8 +249,9 @@ No refresh grant, implicit/hybrid, other algorithms/auth methods, dynamic
 registration, revocation, request objects, encryption, logout or other capabilities.
 
 The advertised jwks_uri is live in M7.2 below; userinfo_endpoint remains a canonical
-URL with HTTP 404 until M7.4. Advertising RS256 does not
-implement M7.3 ID Tokens; scope/profile mapping and full OIDC E2E remain later work.
+URL with HTTP 404 until M7.4. Advertising RS256 does not integrate ID Tokens into
+HTTP token responses; the internal M7.3 capability is described in section 10.
+Scope/profile mapping and full OIDC E2E remain later work.
 Discovery works without provisioned key files. Explicit discovery:check fetches
 the live metadata and verifies the exact allowlist/staged routes without store
 clients, login or direct key-file reads. Its JWKS HTTP assertion now requires the
@@ -285,8 +286,8 @@ Successful JWKS responses use exactly Cache-Control: public, max-age=300, an MVP
 300-second public verification-metadata cache choice. No Set-Cookie, Location or
 WWW-Authenticate; no ETag, Last-Modified or conditional-GET behavior is added.
 There is no rotation, multiple-key publication, auto-generation or reload.
-Discovery keeps no-store and its unchanged metadata. UserInfo, ID Tokens,
-profile mapping and full OIDC E2E remain M7.3+ work.
+Discovery keeps no-store and its unchanged metadata. ID Token HTTP integration,
+UserInfo, profile mapping and full OIDC E2E remain later work; M7.3 is internal only.
 
 Explicit jwks:check performs only HTTP reads and JOSE public-JWK import against
 the existing local stack/signing pair; it never generates keys, opens store
@@ -882,6 +883,54 @@ nonce
 ```
 
 Do not use ID Token as a resource API access token.
+
+### M7.3 internal claim builder and signed ID Token
+
+OidcModule registers IdTokenClaimsService and IdTokenIssuerService internally,
+without exports, a new controller/route or eager calls. Its existing ConfigModule
+and SigningKeyModule imports are sufficient. Discovery/JWKS metadata, startup and
+health behavior remain unchanged; construction never loads signing files.
+
+IdTokenClaimsService.build({subject, audience, nonce, ttlSeconds}) explicitly
+returns exactly {iss, sub, aud, iat, exp, nonce}. Its only runtime configuration
+dependency is ConfigService for ISSUER_URL. Preserve the exact configured issuer
+and apply the equivalent M7.1 OIDC URL policy: valid HTTP/HTTPS hostname, no URL
+credentials, query or fragment (including empty ?/#). Reject rather than repair;
+do not change global env validation or M6 access-token issuer semantics.
+
+Subject is a trusted User.id using the existing UUID convention, preserved exactly
+without querying users. Audience is an explicit trusted OAuth client_id
+(student-spa/banking-web/admin-portal), NOT the access-token resource audience
+(student-api/banking-api/identity-server). Require a nonempty scalar string;
+do not infer, look up, trim, normalize or map it. Nonce is a required nonempty
+scalar opaque string, preserved exactly without generation, decoding or hashing.
+Null/missing/empty nonce fails closed. The builder never reads authorization-code
+state, registry, sessions, stores, key files or network.
+
+ttlSeconds is required explicit trusted positive safe-integer input: no env
+variable/default or implicit reuse of accessTokenTtl. Capture Date.now() once,
+require nonnegative safe-integer milliseconds, then iat=floor(nowMs/1000) and
+exp=iat+ttlSeconds as integer NumericDates. Reject unsafe expiry arithmetic.
+Unknown input fields cannot become claims; no scope/roles/permissions, profile,
+auth_time, acr/amr/azp, at_hash/c_hash/s_hash, jti/nbf or session/grant/secret data.
+Malformed/config/clock failures throw only `ID token claims build failed.` without
+attached causes or sensitive logs.
+
+IdTokenIssuerService.issue uses that builder, then the existing M6.5
+getPrivateSigningKey() and getKeyId(), signing through jose.SignJWT with protected
+header exactly {alg: 'RS256', kid}. Return only {idToken}; no typ, extra headers,
+claim-setting helpers, second issuance clock, alternative key path/cache or manual
+crypto. The same validated SigningKeyService pair supplies M7.2 JWKS, including
+an identical kid. Failures throw only `ID token issuance failed.` without native
+causes, input/key/JWT details or sensitive logs.
+
+M7.3 does NOT change POST /oauth/token: its existing four access-token response
+fields remain exact, even for openid grants, with no id_token/refresh_token. M7.6
+will connect this internal capability to the OIDC token response and supply
+subject <- consumed state.userId, audience <- state.clientId and nonce <-
+state.nonce explicitly. No UserInfo, profile/email mapping or OIDC HTTP flow is
+implemented here. Tests verify real RS256 ID Tokens against M7.2 public JWKs and
+prove client_id/nonce/kid consistency without adding HTTP integration.
 
 ---
 

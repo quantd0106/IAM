@@ -947,7 +947,7 @@ Không advertise application-specific banking scope hoặc refresh grant.
 Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec mục 4.
 
 JWKS URL đã live trong M7.2 (mục 34); UserInfo vẫn 404 cho tới M7.4.
-Chưa phát ID Token, map profile/email claims hoặc hoàn tất OIDC E2E. M6.8 vẫn kiểm tra
+Chưa phát ID Token qua HTTP, map profile/email claims hoặc hoàn tất OIDC E2E. M6.8 vẫn kiểm tra
 OAuth pipeline cũ, chỉ cập nhật expectation Discovery/JWKS từ 404 sang 200.
 
 ```bash
@@ -983,3 +983,23 @@ pnpm --filter identity-server jwks:check
 Probe HTTP read-only kiểm tra shape/allowlist, kid, cache/headers và JOSE import
 public JWK để verify RS256; cần stack và signing pair có sẵn, không tạo/rotate
 keys, mutate stores hoặc in key material/configuration.
+
+## 35. Internal ID Token capability (M7.3)
+
+OidcModule có `IdTokenClaimsService` và `IdTokenIssuerService` nội bộ, không export
+hoặc thêm HTTP route. Builder chỉ tạo sáu claims `iss/sub/aud/iat/exp/nonce`:
+issuer giữ nguyên config với OIDC URL policy như Discovery; subject là UUID User.id;
+audience là OAuth **client_id**, ví dụ student-spa, không phải student-api.
+Nonce bắt buộc không rỗng và giữ nguyên opaque value. TTL là input positive safe
+integer bắt buộc, không env/default/access-token TTL ngầm định; dùng một clock
+instant và NumericDate seconds, reject overflow.
+
+Issuer trả `{idToken}`, ký JOSE RS256 với header đúng `{alg: "RS256", kid}` qua
+SigningKeyService hiện có, cùng key/kid được JWKS publish. Không thêm auth_time,
+azp, at_hash hoặc profile/email claims, không key path/cache mới hay eager loading.
+Lỗi chỉ fixed sanitized message, không native cause hoặc token/key/nonce logs.
+Chi tiết canonical nằm ở implementation spec mục 10.
+
+`POST /oauth/token` vẫn chỉ trả bốn access-token fields, không id_token kể cả
+grant openid. M7.6 mới tích hợp ID Token vào HTTP response; UserInfo và profile
+mapping vẫn thuộc M7.4/M7.5. Không refresh token hoặc OIDC E2E mới.

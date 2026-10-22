@@ -9,6 +9,8 @@ import { AppModule } from './app.module.js';
 import { RedisService } from './redis/redis.service.js';
 import { SigningKeyService } from './security/signing/signing-key.service.js';
 import { AccessTokenClaimsService } from './tokens/access-token-claims.service.js';
+import { IdTokenClaimsService } from './oidc/id-token-claims.service.js';
+import { IdTokenIssuerService } from './oidc/id-token-issuer.service.js';
 
 describe('Identity Server', () => {
   let app: INestApplication<Server>;
@@ -133,6 +135,41 @@ describe('Identity Server', () => {
       .get('/health')
       .expect(200)
       .expect({ status: 'ok' });
+  });
+
+  it('registers the internal ID-token capability and builds claims without key loading or HTTP integration', async () => {
+    const keys = app.get(SigningKeyService);
+    const spies = (
+      [
+        'getPrivateSigningKey',
+        'getPublicVerificationKey',
+        'getPublicJwk',
+        'getKeyId',
+      ] as const
+    ).map((method) => vi.spyOn(keys, method));
+    const issue = vi.spyOn(app.get(IdTokenIssuerService), 'issue');
+    try {
+      expect(
+        app.get(IdTokenClaimsService).build({
+          subject: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+          audience: 'student-spa',
+          nonce: 'opaque-nonce-value',
+          ttlSeconds: 600,
+        }),
+      ).toMatchObject({ aud: 'student-spa', nonce: 'opaque-nonce-value' });
+      await request(app.getHttpServer())
+        .get('/health')
+        .expect(200)
+        .expect({ status: 'ok' });
+      await request(app.getHttpServer())
+        .get('/.well-known/openid-configuration')
+        .expect(200);
+      expect(issue).not.toHaveBeenCalled();
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      issue.mockRestore();
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it('keeps health/Discovery independent of missing files; only an explicit JWKS request initializes keys and fails safely', async () => {
