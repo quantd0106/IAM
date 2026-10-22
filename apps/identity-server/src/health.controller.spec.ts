@@ -123,7 +123,34 @@ describe('Identity Server', () => {
       .expect({ status: 'ok' });
   });
 
-  it.each(['/.well-known/jwks.json', '/.well-known/openid-configuration'])(
+  it('serves public Discovery with unavailable stores and missing signing files, without requesting keys', async () => {
+    const keys = app.get(SigningKeyService);
+    const spies = (
+      [
+        'getPrivateSigningKey',
+        'getPublicVerificationKey',
+        'getPublicJwk',
+        'getKeyId',
+      ] as const
+    ).map((method) => vi.spyOn(keys, method));
+    try {
+      const response = await request(app.getHttpServer())
+        .get('/.well-known/openid-configuration')
+        .expect(200);
+      expect(response.body as unknown).toMatchObject({
+        issuer: 'http://localhost:3000',
+        authorization_endpoint: 'http://localhost:3000/oauth/authorize',
+        token_endpoint: 'http://localhost:3000/oauth/token',
+      });
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(response.headers.location).toBeUndefined();
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it.each(['/.well-known/jwks.json', '/oidc/userinfo'])(
     'does not add the future HTTP endpoint %s',
     async (path) => {
       await request(app.getHttpServer()).get(path).expect(404);

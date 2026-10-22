@@ -206,6 +206,55 @@ GET  /.well-known/jwks.json
 GET  /oidc/userinfo
 ```
 
+### M7.1 OpenID Provider Discovery
+
+GET /.well-known/openid-configuration returns public HTTP 200 application/json,
+Cache-Control: no-store, without authentication, Location or Set-Cookie.
+OidcModule contains DiscoveryController -> DiscoveryService -> ConfigService only;
+building metadata performs no PostgreSQL, Redis, filesystem, signing-key, token,
+registry, request-header or network access and never mutates state.
+
+The exact allowlist is issuer, authorization_endpoint, token_endpoint,
+userinfo_endpoint, jwks_uri, scopes_supported, response_types_supported,
+response_modes_supported, grant_types_supported, subject_types_supported,
+id_token_signing_alg_values_supported, token_endpoint_auth_methods_supported,
+code_challenge_methods_supported, claims_parameter_supported,
+request_parameter_supported and request_uri_parameter_supported. No other metadata
+or environment fields are returned.
+
+Issuer is the exact existing validated ISSUER_URL string, shared with token iss;
+never derive it from Host/forwarded headers/Origin/query or normalize it here.
+Use new URL(rootPath, issuer).href for /oauth/authorize, /oauth/token,
+/oidc/userinfo and /.well-known/jwks.json. Trailing slash and issuer path values
+remain unchanged in issuer; endpoint paths are deliberately root-absolute, not
+issuer-path-prefixed, and no extra route aliases/mounts are introduced. The URL API
+may canonicalize endpoint URLs but must not rewrite the issuer property.
+
+The existing global URL validator remains unchanged. At the Discovery boundary
+only, reject query/fragment components (including empty ?/#) and URL credentials
+instead of stripping/echoing them. This avoids invalid issuer metadata or credential
+disclosure, following the no-query/no-fragment issuer requirement in
+[OpenID Connect Discovery section 3](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata).
+Local HTTP remains the explicit development exception; production HTTPS is enforced
+by existing env validation. Invalid metadata/config/internal failures return fixed
+HTTP 500 {error: 'server_error', error_description: 'Discovery request failed.'}
+without native causes, configuration values or sensitive logs.
+
+Advertise exactly: scopes [openid, profile, email] (not banking.transactions.read),
+response types [code], response modes [query], grants [authorization_code], subjects
+[public], ID-token signing algorithms [RS256], token auth methods
+[client_secret_basic, none] and PKCE [S256]. claims_parameter_supported,
+request_parameter_supported and request_uri_parameter_supported are all false.
+No refresh grant, implicit/hybrid, other algorithms/auth methods, dynamic
+registration, revocation, request objects, encryption, logout or other capabilities.
+
+This is staged metadata only: jwks_uri and userinfo_endpoint are canonical URLs,
+but their HTTP routes remain 404 until M7.2 and M7.4. Advertising RS256 does not
+implement M7.3 ID Tokens; scope/profile mapping and full OIDC E2E remain later work.
+Discovery works without provisioned key files. Explicit discovery:check fetches
+the live metadata and verifies the exact allowlist/staged routes without stores,
+login or key-file dependencies.
+
 ---
 
 ## 5. Authorization Code Flow
@@ -727,7 +776,8 @@ config/clock/internal failures throw only `Access token claims build failed.` wi
 no native cause or logs of subject/audience/grants/RBAC/config values. TokensModule
 has no controller; AppModule imports it without invoking build or loading keys.
 M6.7 alone combines these claims with M6.5 keys/JOSE protected headers/signing and
-the token response; M6.5 stays lazy/unchanged and JWKS/Discovery remain absent.
+the token response; M6.5 stays lazy/unchanged and JWKS remains absent. M7.1
+adds only public Discovery metadata, without signing-key access.
 
 ### M6.7 issuance boundary
 
@@ -1554,7 +1604,9 @@ session; repeat the identical authorize request with that cookie, without follow
 the callback. Verify exact callback/state, real hash-keyed code/session binding,
 S256 exchange, and signed access-token response using the configured public key
 and JOSE RS256 verification. Replay the same exchange must return invalid_grant
-without recreating code state. No ID/refresh token; M7 endpoints remain absent.
+without recreating code state. No ID/refresh token; M7.1 adds Discovery metadata
+while JWKS/UserInfo remain staged. Only the obsolete Discovery-404 assertion is
+updated in this M6.8 regression; its OAuth/session/code/token flow is unchanged.
 
 The check requires existing provisioned keys and never generates/rotates them.
 Missing/invalid public verification key yields a fixed prerequisite message without

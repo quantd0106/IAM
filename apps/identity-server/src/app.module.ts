@@ -7,6 +7,7 @@ import { ClientRegistryModule } from './client-registry/client-registry.module.j
 import { OAuthModule } from './oauth/oauth.module.js';
 import { SigningKeyModule } from './security/signing/signing-key.module.js';
 import { TokensModule } from './tokens/tokens.module.js';
+import { OidcModule } from './oidc/oidc.module.js';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { TokensModule } from './tokens/tokens.module.js';
     OAuthModule,
     SigningKeyModule,
     TokensModule,
+    OidcModule,
   ],
   controllers: [HealthController],
 })

@@ -864,7 +864,7 @@ không native cause/PEM/path logs, không cache key set dở dang. Public JWK ch
 
 Key paths trong `.env.example`/Compose không được load lúc startup hay
 `GET /health`. Provision development explicit theo mục 32; không có production
-rotation hoặc JWKS/Discovery endpoint, không commit private key.
+rotation hoặc JWKS endpoint; Discovery metadata có ở mục 33. Không commit private key.
 Tests dùng ephemeral keys và cleanup temporary files, không cần operational key.
 
 ## 31. Internal access-token claim capability
@@ -879,7 +879,7 @@ Chi tiết validation/defensive copies nằm ở `IMPLEMENTATION_SPEC.md` mục 
 
 Capability không đọc DB/Redis/network/key files, không import/call signing service
 hay JOSE. M9.1-M9.3 mới persist/resolve RBAC, M9.4 mới cung cấp resolved values.
-M6.7 kết hợp claims và signing qua service riêng; chưa có JWKS/Discovery.
+M6.7 kết hợp claims và signing qua service riêng; JWKS vẫn staged, Discovery có ở mục 33.
 
 ## 32. Authorization-code access-token issuance (M6.7)
 
@@ -929,4 +929,29 @@ register → authorize 401 → login/cookie → cùng authorize request → call
 đã sẵn sàng; không tự seed, generate/rotate keys hoặc follow callback tới frontend.
 Cleanup chỉ user/session/code của lần chạy; fingerprint 8 bảng và unrelated Redis
 values/absolute expiry phải giữ nguyên. Chạy trên stack local yên tĩnh, không in
-password/cookie/code/verifier/JWT. Đây là OAuth E2E, chưa có OIDC/ID/refresh token.
+password/cookie/code/verifier/JWT. Đây chỉ là OAuth E2E, chưa kiểm chứng full OIDC
+hoặc ID/refresh token.
+
+## 33. Public OpenID Provider Discovery (M7.1)
+
+`GET /.well-known/openid-configuration` trả 200 JSON public, no-store, không yêu cầu
+login hoặc phát cookie/redirect. Metadata chỉ đọc ConfigService, không truy cập
+PostgreSQL/Redis/signing keys và không cần provision key files để fetch Discovery.
+Issuer giữ nguyên validated ISSUER_URL; endpoints dựng bằng URL API với root paths.
+Query/fragment/credentials trong issuer bị từ chối bằng safe 500 tại Discovery,
+không silently normalize hoặc thay global validation/M6 behavior.
+
+Advertise đúng openid/profile/email, code/query, authorization_code, public subject,
+RS256, client_secret_basic + none và S256. claims/request/request_uri đều unsupported.
+Không advertise application-specific banking scope hoặc refresh grant.
+Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec mục 4.
+
+JWKS/UserInfo URLs đã được advertise nhưng HTTP endpoints vẫn 404 cho tới M7.2/M7.4.
+Chưa phát ID Token, map profile/email claims hoặc hoàn tất OIDC E2E. M6.8 vẫn kiểm tra
+OAuth pipeline cũ, chỉ đổi expectation Discovery từ 404 sang 200.
+
+```bash
+pnpm --filter identity-server discovery:check
+```
+
+Live check chỉ dùng issuer và HTTP, không yêu cầu DB/Redis clients, login hay key files.

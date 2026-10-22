@@ -746,7 +746,7 @@ Depends on: M6.5, M6.7
 
 ## M7.1 — Discovery endpoint
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

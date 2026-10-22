@@ -582,8 +582,8 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
         const response = await http(path);
         assert.equal(
           response.status,
-          404,
-          'Future/unsupported HTTP endpoint must remain absent.',
+          path === '/.well-known/openid-configuration' ? 200 : 404,
+          'HTTP endpoint status must match the current milestone staging.',
         );
         await response.arrayBuffer();
       }
@@ -607,7 +607,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       'M6.8 real-stack OAuth E2E passed: canonical PUBLIC student-spa/profile; HTTP register -> authorize 401 -> login/session -> identical authorize 302/state -> S256 token 200 -> RS256 public-key/claims verification -> replay invalid_grant.',
     );
     console.log(
-      'Owned logout and FK-ordered teardown passed; eight DB fingerprints and all unrelated Redis values/absolute expiry restored. GET token/JWKS/Discovery remain 404; no ID/refresh token, client secret or private material printed.',
+      'Owned logout and FK-ordered teardown passed; eight DB fingerprints and all unrelated Redis values/absolute expiry restored. Discovery is 200; GET token/JWKS remain 404; no ID/refresh token, client secret or private material printed.',
     );
   } finally {
     if (redis.isOpen) redis.destroy();
