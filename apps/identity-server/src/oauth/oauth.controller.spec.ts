@@ -31,6 +31,7 @@ import { ClientRegistryModule } from '../client-registry/client-registry.module.
 import { ScopeLookupService } from '../client-registry/scope-lookup.service.js';
 import { ClientSecretService } from '../client-registry/client-secret.service.js';
 import { OAuthModule } from './oauth.module.js';
+import { OidcModule } from '../oidc/oidc.module.js';
 import { OAuthController } from './oauth.controller.js';
 import { AuthorizationRequestService } from './authorization-request.service.js';
 import { TokenRequestService } from './token-request.service.js';
@@ -165,6 +166,14 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch })
+      .overrideProvider(ConfigService)
+      .useValue(
+        new ConfigService<Environment, true>({
+          COOKIE_NAME: 'iam.sid',
+          COOKIE_SECURE: false,
+          ISSUER_URL: 'http://localhost:3000',
+        }),
+      )
       .useMocker((token) =>
         token === ConfigService
           ? new ConfigService<Environment, true>({
@@ -322,6 +331,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       SessionAuthenticationModule,
       RedisModule,
       TokensModule,
+      OidcModule,
     ]);
     expect(Reflect.getMetadata('controllers', OAuthModule) as unknown).toEqual([
       OAuthController,
@@ -915,13 +925,16 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
       error_description: 'Authorization request failed.',
     });
   });
-  it.each([
-    '/oauth/token',
-    '/oauth/revoke',
-    '/.well-known/openid-configuration',
-    '/.well-known/jwks.json',
-    '/oidc/userinfo',
-  ])('does not add future endpoint %s', async (path) => {
-    await request(app.getHttpServer()).get(path).expect(404);
+  it.each(['/oauth/token', '/oauth/revoke'])(
+    'does not add future endpoint %s',
+    async (path) => {
+      await request(app.getHttpServer()).get(path).expect(404);
+    },
+  );
+  it('shares existing OIDC routes through the M7.6 import without eager issuance', async () => {
+    await request(app.getHttpServer())
+      .get('/.well-known/openid-configuration')
+      .expect(200);
+    await request(app.getHttpServer()).get('/oidc/userinfo').expect(401);
   });
 });

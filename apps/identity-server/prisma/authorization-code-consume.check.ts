@@ -69,7 +69,8 @@ async function checkConsumption(): Promise<void> {
     clientId: 'student-spa',
     userId: randomUUID(),
     redirectUri: 'http://localhost:3200/callback',
-    grantedScopes: ['profile', 'openid'],
+    // OAuth-only fixture: retain this probe's four-field M6 response contract.
+    grantedScopes: ['profile'],
     codeChallenge: null,
     nonce: 'probe-owned-nonce',
     authTime: Date.now() - 1000,

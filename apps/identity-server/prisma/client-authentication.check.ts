@@ -165,7 +165,8 @@ async function checkClientAuthentication(): Promise<void> {
         clientId,
         userId: subject,
         redirectUri: body.redirect_uri,
-        grantedScopes: ['openid', 'profile'],
+        // OAuth-only fixture: OIDC response/nonce policy is verified by M7.6.
+        grantedScopes: ['profile'],
         codeChallenge,
         nonce: null,
         authTime: Date.now() - 1000,
@@ -214,7 +215,7 @@ async function checkClientAuthentication(): Promise<void> {
         subject: subjects.get(body.code)!,
         audience: client.audience,
         ttlSeconds: client.ttlSeconds,
-        scopes: ['openid', 'profile'],
+        scopes: ['profile'],
       });
     } else
       assert.ok(

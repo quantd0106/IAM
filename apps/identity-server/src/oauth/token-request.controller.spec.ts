@@ -30,6 +30,7 @@ import { IdpSessionStateService } from '../session/idp-session-state.service.js'
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
 import * as crypto from 'node:crypto';
 import { AccessTokenIssuerService } from '../tokens/access-token-issuer.service.js';
+import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
 
 vi.mock('node:crypto', async (original) => {
   const actual = await original<typeof import('node:crypto')>();
@@ -150,12 +151,21 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
             scope: 'openid profile',
           }),
       })
+      // This suite isolates request shape/GETDEL/PKCE; real OIDC signing is tested separately.
+      .overrideProvider(IdTokenIssuerService)
+      .useValue({
+        issue: () => Promise.resolve({ idToken: 'isolated-id-issuer-fixture' }),
+      })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch: unexpected })
       .overrideProvider(AuthorizationService)
       .useValue({ authorize: unexpected })
       .overrideProvider(AuthorizationRequestService)
       .useValue({ validate: unexpected })
+      .overrideProvider(ConfigService)
+      .useValue(
+        new ConfigService({ COOKIE_NAME: 'iam.sid', COOKIE_SECURE: false }),
+      )
       .useMocker((token) =>
         token === ConfigService
           ? new ConfigService({ COOKIE_NAME: 'iam.sid', COOKIE_SECURE: false })
@@ -234,6 +244,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
         token_type: 'Bearer',
         expires_in: 600,
         scope: 'openid profile',
+        id_token: 'isolated-id-issuer-fixture',
       });
     else expect(response.body).toEqual(expected);
     if (status === 400 && (expected === invalid || expected === unsupported))
@@ -569,6 +580,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
           token_type: 'Bearer',
           expires_in: 600,
           scope: 'openid profile',
+          id_token: 'isolated-id-issuer-fixture',
         });
       else expect(response.body).toEqual(invalidGrant);
       expect(response.headers['cache-control']).toBe('no-store');

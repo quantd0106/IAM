@@ -116,7 +116,7 @@ describe('public GET /.well-known/jwks.json', () => {
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],
-    ).toEqual([]);
+    ).toEqual([IdTokenIssuerService]);
     expect(
       Reflect.getMetadata('__module:global__', OidcModule) as unknown,
     ).not.toBe(true);

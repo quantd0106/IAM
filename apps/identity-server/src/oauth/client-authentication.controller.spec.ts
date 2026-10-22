@@ -108,7 +108,8 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
         clientId,
         userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
         redirectUri: body.redirect_uri,
-        grantedScopes: ['openid'],
+        // Keep this client-authentication regression OAuth-only; M7.6 tests OIDC separately.
+        grantedScopes: ['profile'],
         codeChallenge,
         nonce: null,
         authTime: Date.now() - 1000,
@@ -165,7 +166,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
         aud: client.accessTokenAudience,
         iat: payload.iat,
         exp: payload.exp,
-        scope: 'openid',
+        scope: 'profile',
         roles: [],
         permissions: [],
       });

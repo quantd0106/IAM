@@ -313,7 +313,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
       expect(getKid).not.toHaveBeenCalled();
     },
   );
-  it('keeps ID-token providers internal and lazy alongside the current OIDC controllers', async () => {
+  it('exports only the ID-token issuer for M7.6 while keeping construction lazy', async () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
@@ -334,7 +334,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],
-    ).toEqual([]);
+    ).toEqual([IdTokenIssuerService]);
     expect(
       Reflect.getMetadata('__module:global__', OidcModule) as unknown,
     ).not.toBe(true);

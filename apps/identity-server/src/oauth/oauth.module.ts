@@ -8,6 +8,7 @@ import { AuthorizationCodeService } from './authorization-code.service.js';
 import { RedisModule } from '../redis/redis.module.js';
 import { TokenRequestService } from './token-request.service.js';
 import { TokensModule } from '../tokens/tokens.module.js';
+import { OidcModule } from '../oidc/oidc.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { TokensModule } from '../tokens/tokens.module.js';
     SessionAuthenticationModule,
     RedisModule,
     TokensModule,
+    OidcModule,
   ],
   controllers: [OAuthController],
   providers: [

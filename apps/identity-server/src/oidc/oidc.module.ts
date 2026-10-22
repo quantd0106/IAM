@@ -23,5 +23,6 @@ import { UserInfoClaimsService } from './userinfo-claims.service.js';
     UserInfoAccessTokenService,
     UserInfoClaimsService,
   ],
+  exports: [IdTokenIssuerService],
 })
 export class OidcModule {}

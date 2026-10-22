@@ -896,7 +896,8 @@ Seed giữ nguyên IDs, secrets, redirects/scopes và TTL; unrelated records kh�
 từ authenticated client và roles=[]/permissions=[] cho tới M9.4. JWT có đúng tám
 claims mục 31, header đúng `{alg: 'RS256', kid}`; không typ hoặc clock thứ hai.
 Response JSON đúng bốn field: `access_token`, `token_type: "Bearer"`,
-`expires_in: exp-iat`, `scope`. Không ID/refresh token, kể cả scope openid.
+`expires_in: exp-iat`, `scope` cho OAuth-only grant. M7.6 thêm đúng `id_token`
+khi consumed grant có exact `openid` (mục 37); chưa có refresh token.
 Key/claims/signing failure sau GETDEL trả fixed 500 `server_error` /
 `Token request failed.`; code vẫn burn, retry trả invalid_grant, không restore.
 
@@ -949,8 +950,8 @@ Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec 
 
 JWKS URL đã live trong M7.2 (mục 34); UserInfo hiện yêu cầu Bearer token (mục 36),
 không credentials trả 401 kèm challenge.
-Chưa phát ID Token qua HTTP hoặc hoàn tất OIDC E2E; UserInfo đã map profile/email theo scope (mục 36). M6.8 vẫn kiểm tra
-OAuth pipeline cũ, chỉ cập nhật expectation Discovery/JWKS từ 404 sang 200.
+M7.6 đã tích hợp ID Token qua HTTP và OIDC E2E riêng (mục 37); UserInfo map
+profile/email theo scope (mục 36). M6.8 vẫn là regression OAuth-only độc lập.
 
 ```bash
 pnpm --filter identity-server discovery:check
@@ -988,8 +989,8 @@ keys, mutate stores hoặc in key material/configuration.
 
 ## 35. Internal ID Token capability (M7.3)
 
-OidcModule có `IdTokenClaimsService` và `IdTokenIssuerService` nội bộ, không export
-hoặc thêm HTTP route. Builder chỉ tạo sáu claims `iss/sub/aud/iat/exp/nonce`:
+OidcModule có `IdTokenClaimsService` và `IdTokenIssuerService`; từ M7.6 chỉ export
+issuer cho OAuthModule, không thêm ID Token route riêng. Builder chỉ tạo sáu claims `iss/sub/aud/iat/exp/nonce`:
 issuer giữ nguyên config với OIDC URL policy như Discovery; subject là UUID User.id;
 audience là OAuth **client_id**, ví dụ student-spa, không phải student-api.
 Nonce bắt buộc không rỗng và giữ nguyên opaque value. TTL là input positive safe
@@ -1002,9 +1003,8 @@ azp, at_hash hoặc profile/email claims, không key path/cache mới hay eager 
 Lỗi chỉ fixed sanitized message, không native cause hoặc token/key/nonce logs.
 Chi tiết canonical nằm ở implementation spec mục 10.
 
-`POST /oauth/token` vẫn chỉ trả bốn access-token fields, không id_token kể cả
-grant openid. M7.6 mới tích hợp ID Token vào HTTP response; UserInfo scope-limited có ở
-mục 36. Không refresh token hoặc OIDC E2E mới.
+M7.6 dùng lại issuer này tại `POST /oauth/token` cho exact openid grant (mục 37).
+OAuth-only vẫn bốn fields; UserInfo scope-limited có ở mục 36. Không refresh token.
 
 ## 36. Bearer-protected, scope-limited UserInfo (M7.4–M7.5)
 
@@ -1060,4 +1060,52 @@ fixture unique, không credentials/sessions; finally xóa đúng fixture sở h�
 xác nhận đã xóa. Không mutate registry/Redis, generate keys hoặc in PII/JWT.
 `discovery:check` hiện yêu cầu UserInfo 401 + Bearer challenge; GET token vẫn 404.
 Discovery metadata/JWKS giữ nguyên; ID Token vẫn đúng sáu claims, không profile/email.
-Không thay token response, phát id_token/refresh_token hoặc implement M7.6+.
+Mapping M7.5 giữ nguyên; M7.6 chỉ tích hợp ID Token vào token response như mục 37.
+
+## 37. OIDC Authorization Code integration + E2E (M7.6)
+
+`POST /oauth/token` chỉ xét `grantedScopes` của authorization code đã consume và
+verify binding/expiry/PKCE. Exact `openid` -> response đúng năm fields:
+`access_token`, `token_type: "Bearer"`, `expires_in`, `scope`, `id_token`.
+Không có exact openid (kể cả có nonce hoặc `OpenID`) -> đúng bốn fields M6.7,
+không ID Token. Không dùng body/query/header/client allowed scopes để chọn OIDC.
+Mọi response vẫn no-store/no-cache, không Set-Cookie/Location hay refresh_token.
+
+Thứ tự cũ giữ nguyên: request -> client auth -> audience/TTL config -> GETDEL
+và binding/expiry -> PKCE -> access signing -> conditional ID Token -> một response.
+ID Token lấy sub/userId, aud/clientId và exact nonce từ consumed state, không query
+User. Student access-token aud=`student-api`, ID-token aud=`student-spa`.
+TTL cả hai token là client accessTokenTtl đã validate; từng builder dùng clock riêng,
+không bắt buộc iat bằng nhau. `expires_in` chỉ mô tả access token.
+
+ID Token vẫn đúng sáu claims mục 35, không at_hash/auth_time/profile/email.
+Openid grant có nonce null hoặc ID-token issuance lỗi -> safe 500 server_error,
+không partial access token; code vẫn consumed, retry -> invalid_grant. Không thêm
+TTL env/schema, revocation policy, key path/cache hoặc eager startup calls.
+
+Chạy trên quiet local stack đã có seed và signing pair, sau build/Compose rebuild:
+
+```bash
+pnpm --filter identity-server authorization-code-e2e:check
+pnpm --filter identity-server discovery:check
+pnpm --filter identity-server jwks:check
+pnpm --filter identity-server userinfo:check
+pnpm --filter identity-server oidc-e2e:check
+```
+
+OIDC check mới dùng PUBLIC student-spa với openid profile email, random state/nonce
+và S256 verifier: register -> authorize 401 -> login -> cùng authorize 302/state
+-> năm token fields -> live Discovery/JWKS client verification -> UserInfo -> replay.
+Client dùng JOSE kiểm RS256/issuer/client audience, exact nonce và sáu claims;
+cùng ID Token phải bị reject khi expected nonce khác hoặc audience là student-api.
+Không đọc PEM files để verify. UserInfo dùng access token, phải match ID Token sub
+trước khi nhận preferred_username/email. M6.8 vẫn riêng biệt, OAuth-only scope profile.
+
+Finally logout và cleanup chỉ owned User/Credential/Session/code/runtime state;
+kiểm fingerprint tám bảng, unrelated Redis values/absolute expiry và published JWKS
+không đổi. Không sửa seed/registry/keys, flush Redis hoặc in token/code/nonce/password/
+cookie/PII. Không triển khai refresh-token/M8+.
+
+Ghi chú M7.5 chưa thay đổi: khi có profile hoặc email, mapper select/validate cả
+username và email; persisted field không được yêu cầu nhưng hỏng vẫn có thể gây 500.
+Đây là hardening note không chặn OIDC flow, không refactor trong M7.6.

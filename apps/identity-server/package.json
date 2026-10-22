@@ -25,6 +25,7 @@
     "authorization-code-consume:check": "tsx prisma/authorization-code-consume.check.ts",
     "client-authentication:check": "tsx prisma/client-authentication.check.ts",
     "authorization-code-e2e:check": "tsx prisma/authorization-code-e2e.check.ts",
+    "oidc-e2e:check": "tsx prisma/oidc-e2e.check.ts",
     "discovery:check": "tsx prisma/discovery.check.ts",
     "jwks:check": "tsx prisma/jwks.check.ts",
     "userinfo:check": "tsx prisma/userinfo.check.ts",

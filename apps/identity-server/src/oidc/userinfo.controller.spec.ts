@@ -207,7 +207,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     expect(response.headers.location).toBeUndefined();
   };
 
-  it('adds only internal claims resolution and Prisma without Redis/global scope/exports', () => {
+  it('keeps claims resolution internal and exports only the ID-token issuer without Redis/global scope', () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
@@ -215,7 +215,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],
-    ).toEqual([]);
+    ).toEqual([IdTokenIssuerService]);
     expect(
       Reflect.getMetadata('__module:global__', OidcModule) as unknown,
     ).not.toBe(true);

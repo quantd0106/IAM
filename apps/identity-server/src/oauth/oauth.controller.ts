@@ -34,6 +34,7 @@ import {
 } from '../client-registry/client-authentication.service.js';
 import { AccessTokenIssuerService } from '../tokens/access-token-issuer.service.js';
 import { requireAccessTokenIssuance } from '../tokens/access-token-issuance.policy.js';
+import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -49,6 +50,8 @@ export class OAuthController {
     private readonly clients: ClientAuthenticationService,
     @Inject(AccessTokenIssuerService)
     private readonly tokens: AccessTokenIssuerService,
+    @Inject(IdTokenIssuerService)
+    private readonly idTokens: IdTokenIssuerService,
   ) {}
 
   @Post('token')
@@ -65,6 +68,7 @@ export class OAuthController {
     token_type: 'Bearer';
     expires_in: number;
     scope: string;
+    id_token?: string;
   }> {
     let result: TokenRequestResult;
     try {
@@ -150,12 +154,24 @@ export class OAuthController {
         roles: [],
         permissions: [],
       });
-      return {
+      const tokenResponse = {
         access_token: token.accessToken,
-        token_type: 'Bearer',
+        token_type: 'Bearer' as const,
         expires_in: token.expiresIn,
         scope: token.scope,
       };
+      if (!grant.state.grantedScopes.includes('openid')) return tokenResponse;
+      if (grant.state.nonce === null)
+        throw new Error('Invalid OIDC grant invariant.');
+      const { idToken } = await this.idTokens.issue({
+        subject: grant.state.userId,
+        audience: grant.state.clientId,
+        nonce: grant.state.nonce,
+        ttlSeconds: issuance.ttlSeconds,
+      });
+      // Deliver one complete response only after both issuers succeed. Any failure
+      // above leaves the GETDEL-consumed code burned, never a partial token response.
+      return { ...tokenResponse, id_token: idToken };
     } catch {
       throw new HttpException(
         { error: 'server_error', error_description: 'Token request failed.' },

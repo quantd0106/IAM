@@ -250,9 +250,9 @@ No refresh grant, implicit/hybrid, other algorithms/auth methods, dynamic
 registration, revocation, request objects, encryption, logout or other capabilities.
 
 The advertised jwks_uri is live in M7.2 below; userinfo_endpoint is live in M7.4
-as a Bearer-protected resource (401 without credentials). Advertising RS256 does not integrate ID Tokens into
-HTTP token responses; the internal M7.3 capability is described in section 10.
-M7.5 supplies scope-limited UserInfo mapping below; full OIDC integration/E2E remains M7.6.
+as a Bearer-protected resource (401 without credentials). M7.5 supplies scope-limited
+UserInfo mapping below; M7.6 integrates the M7.3 ID Token capability and real OIDC
+Authorization Code E2E in section 10, without changing Discovery metadata.
 Discovery works without provisioned key files. Explicit discovery:check fetches
 the live metadata and verifies the exact allowlist/staged routes without store
 clients, login or direct key-file reads. Its JWKS HTTP assertion now requires the
@@ -288,8 +288,8 @@ Successful JWKS responses use exactly Cache-Control: public, max-age=300, an MVP
 WWW-Authenticate; no ETag, Last-Modified or conditional-GET behavior is added.
 There is no rotation, multiple-key publication, auto-generation or reload.
 Discovery keeps no-store and its unchanged metadata. M7.4 adds protected UserInfo,
-extended by M7.5 below. ID Token HTTP integration and full OIDC E2E remain M7.6
-work; M7.3 is internal only.
+extended by M7.5 below. M7.6 integrates ID Token HTTP issuance and OIDC E2E using
+these unchanged public keys and the existing M7.3 capability.
 
 Explicit jwks:check performs only HTTP reads and JOSE public-JWK import against
 the existing local stack/signing pair; it never generates keys, opens store
@@ -365,8 +365,8 @@ temporary User fixture with finally cleanup and removal verification; no credent
 sessions, registry or Redis mutations. It does not generate/rotate keys and is not
 full OIDC E2E. Discovery:check checks
 the advertised UserInfo URL for 401 + Bearer challenge; metadata remains unchanged.
-POST /oauth/token still returns only its four access-token fields, without
-id_token/refresh_token. M7.3 remains internal; integration belongs to M7.6.
+POST /oauth/token preserves four access-token fields for OAuth-only grants;
+M7.6 conditionally adds id_token for exact openid grants, never refresh_token.
 
 ### M7.5 scope-limited UserInfo claims
 
@@ -409,9 +409,9 @@ workflow or new column is added.
 
 Discovery's exact metadata/scopes remain unchanged, without claims_supported.
 The internal M7.3 ID Token remains exactly iss/sub/aud/iat/exp/nonce; profile/email
-are supplied only through UserInfo. POST /oauth/token still returns exactly four
-M6.7 access-token fields, no id_token or refresh_token. M7.6 owns final OIDC
-token-response integration and E2E, not M7.5.
+are supplied only through UserInfo. M7.5 did not change token issuance; M7.6 below
+conditionally adds id_token to the four M6.7 access-token fields for exact openid
+grants. No refresh_token is implemented.
 
 ---
 
@@ -442,7 +442,8 @@ GET /oauth/token remains absent.
 M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
 The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
 resolution/authentication -> M6.7 issuance metadata validation -> M6.2 code
-hashing/GETDEL/binding -> M6.3 PKCE -> claims -> RS256 signing -> HTTP 200.
+hashing/GETDEL/binding -> M6.3 PKCE -> access claims -> RS256 access signing ->
+M7.6 conditional ID Token -> single HTTP 200.
 Resolve the exact body client_id against Client.clientId: no trim, case conversion,
 Unicode normalization, alias or fallback. Unknown/disabled clients fail authentication.
 PUBLIC clients (Student SPA) require no secret and proceed only without an Authorization
@@ -955,7 +956,8 @@ accessToken, expiresIn=claims.exp-claims.iat and scope=claims.scope.
 
 POST /oauth/token returns HTTP 200 application/json with exactly access_token,
 token_type='Bearer', expires_in and scope; Cache-Control: no-store and
-Pragma: no-cache, without Location/Set-Cookie. No ID/refresh token, even for openid.
+Pragma: no-cache, without Location/Set-Cookie. This remains exact for OAuth-only
+grants; M7.6 adds only id_token for exact consumed openid grants. No refresh token.
 Claims/key/signing/internal failures after consumption return the same sanitized
 500; code stays permanently burned, with no restoration/retry write. A retry of
 that code returns invalid_grant before reaching claims/keys/signing. Existing
@@ -1005,9 +1007,9 @@ Do not use ID Token as a resource API access token.
 
 ### M7.3 internal claim builder and signed ID Token
 
-OidcModule registers IdTokenClaimsService and IdTokenIssuerService internally,
-without exports, a new controller/route or eager calls. Its existing ConfigModule
-and SigningKeyModule imports are sufficient. Discovery/JWKS metadata, startup and
+OidcModule registers IdTokenClaimsService and IdTokenIssuerService, originally
+internal in M7.3. M7.6 exports only IdTokenIssuerService for OAuthModule; there is
+no new ID Token controller/route or eager call. Discovery/JWKS metadata, startup and
 health behavior remain unchanged; construction never loads signing files.
 
 IdTokenClaimsService.build({subject, audience, nonce, ttlSeconds}) explicitly
@@ -1043,13 +1045,73 @@ crypto. The same validated SigningKeyService pair supplies M7.2 JWKS, including
 an identical kid. Failures throw only `ID token issuance failed.` without native
 causes, input/key/JWT details or sensitive logs.
 
-M7.3 does NOT change POST /oauth/token: its existing four access-token response
-fields remain exact, even for openid grants, with no id_token/refresh_token. M7.6
-will connect this internal capability to the OIDC token response and supply
-subject <- consumed state.userId, audience <- state.clientId and nonce <-
-state.nonce explicitly. No UserInfo, profile/email mapping or OIDC HTTP flow is
-implemented here. Tests verify real RS256 ID Tokens against M7.2 public JWKs and
-prove client_id/nonce/kid consistency without adding HTTP integration.
+M7.3 originally added only this capability. M7.6 connects it to the OIDC token
+response below without modifying either frozen ID Token builder/issuer. Their
+tests continue to verify real RS256 ID Tokens against M7.2 public JWKs and exact
+client_id/nonce/kid consistency.
+
+### M7.6 Authorization Code OIDC integration and client E2E
+
+The non-global OidcModule exports ONLY IdTokenIssuerService. OAuthModule imports
+OidcModule and OAuthController injects that issuer, with no reverse module import,
+forwardRef, new signing path, key cache or constructor-time work. All other OIDC
+services remain unexported. Startup, process health and Discovery remain unchanged;
+no new eager key loading or database query is introduced.
+
+Preserve the token pipeline: request shape/grant -> client authentication ->
+validate registered access-token audience/TTL -> atomic GETDEL, binding/expiry ->
+PKCE -> access-token claims/signing -> conditional ID Token -> one HTTP response.
+Only consumed grant.state.grantedScopes.includes('openid') selects OIDC, with exact
+case-sensitive token matching, AFTER consumption/PKCE and access-token issuance.
+Request body/query/headers, allowed scopes, client/redirect or nonce presence alone
+cannot select OIDC. A non-openid grant with nonce still receives OAuth-only output.
+
+For OIDC call the existing issuer with subject = state.userId, audience =
+state.clientId, nonce = state.nonce unchanged and ttlSeconds = issuance.ttlSeconds
+from the already validated authenticated client's accessTokenTtl. Require non-null
+stored nonce; null in an openid grant is a server/state invariant failure, not
+invalid_client/invalid_grant. No User/session lookup, nonce generation, decoding,
+normalization, separate TTL env or schema column is added. Each builder retains
+its own single clock: exp-iat equals the same TTL independently, without requiring
+identical iat values. expires_in describes only the access-token lifetime.
+
+OAuth-only HTTP 200 has exactly access_token, token_type='Bearer', expires_in and
+scope. OIDC HTTP 200 has exactly those four plus id_token. Both set no-store and
+Pragma no-cache, without Set-Cookie or Location. Never return refresh_token or
+profile/session/nonce metadata separately. ID Token remains exactly the six M7.3
+claims: iss/sub/aud/iat/exp/nonce, even for openid profile email. No at_hash,
+auth_time, RBAC or profile claims are added; profile/email remain UserInfo-only.
+Canonical Student audiences deliberately differ: access-token aud=student-api,
+ID Token aud=student-spa (OAuth client_id).
+
+Pre-GETDEL validation/client/issuance-metadata errors do not burn code. After
+successful GETDEL, all failures leave it consumed, including null OIDC nonce,
+access-token failure or ID-token claims/signing failure. Return only existing fixed
+HTTP 500 {error:'server_error', error_description:'Token request failed.'}; never a
+partial access token, new error class, native cause or sensitive log. A generated
+access token may remain transient in memory but is not delivered on ID-token
+failure. Never restore/reinsert code; retry receives fixed 400 invalid_grant.
+Existing 401 invalid_client and 400 grant/PKCE contracts remain unchanged.
+
+Explicit oidc-e2e:check is separate from frozen OAuth-only M6.8 profile E2E. Use
+canonical PUBLIC student-spa, exact callback, S256 and openid profile email with
+random state/nonce/verifier. Real HTTP registration -> authorize 401 -> login/IdP
+cookie -> identical authorize 302/exact state -> token exchange (no Basic/secret)
+-> exact five-field response -> replay invalid_grant. Validate BOTH signatures
+through LIVE Discovery-advertised public JWKS, never direct PEM reads. JOSE
+enforces RS256, expected issuer and each token's distinct audience; validate exact
+header/claim allowlists, subject and per-token TTL. Explicitly compare ID-token
+nonce to the original opaque request nonce, and prove the SAME token is rejected
+for a wrong expected nonce and the resource-API audience.
+
+Call live advertised UserInfo with the ACCESS token, requiring exactly
+sub/preferred_username/email for the registered identity. Before accepting profile
+claims, explicitly require UserInfo.sub === validated ID Token.sub. Preserve the
+existing standalone UserInfo check and ID-token-as-Bearer rejection tests.
+Use M6.8's unique ownership proof, finally logout/runtime/code/FK-ordered row
+cleanup, eight database fingerprints and unrelated Redis value/absolute-expiry
+snapshots. Compare published JWKS before/after; no key writes, canonical registry
+changes, seed, flush or sensitive output. This completes M7 only; M8 remains absent.
 
 ---
 
