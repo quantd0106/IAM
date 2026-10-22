@@ -27,6 +27,14 @@ describe('Identity Server', () => {
     });
     for (const [name, value] of Object.entries(environment))
       vi.stubEnv(name, String(value));
+    const startupSpies = (
+      [
+        'getPrivateSigningKey',
+        'getPublicVerificationKey',
+        'getPublicJwk',
+        'getKeyId',
+      ] as const
+    ).map((method) => vi.spyOn(SigningKeyService.prototype, method));
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -36,6 +44,10 @@ describe('Identity Server', () => {
 
     app = moduleFixture.createNestApplication<INestApplication<Server>>();
     await app.init();
+    for (const spy of startupSpies) {
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
   });
 
   afterAll(async () => {
@@ -123,7 +135,7 @@ describe('Identity Server', () => {
       .expect({ status: 'ok' });
   });
 
-  it('serves public Discovery with unavailable stores and missing signing files, without requesting keys', async () => {
+  it('keeps health/Discovery independent of missing files; only an explicit JWKS request initializes keys and fails safely', async () => {
     const keys = app.get(SigningKeyService);
     const spies = (
       [
@@ -134,6 +146,10 @@ describe('Identity Server', () => {
       ] as const
     ).map((method) => vi.spyOn(keys, method));
     try {
+      await request(app.getHttpServer())
+        .get('/health')
+        .expect(200)
+        .expect({ status: 'ok' });
       const response = await request(app.getHttpServer())
         .get('/.well-known/openid-configuration')
         .expect(200);
@@ -145,12 +161,32 @@ describe('Identity Server', () => {
       expect(response.headers['set-cookie']).toBeUndefined();
       expect(response.headers.location).toBeUndefined();
       for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      const jwks = await request(app.getHttpServer())
+        .get('/.well-known/jwks.json')
+        .expect(500);
+      expect(jwks.body as unknown).toEqual({
+        error: 'server_error',
+        error_description: 'JWKS request failed.',
+      });
+      expect(jwks.headers['cache-control']).toBe('no-store');
+      expect(jwks.headers['set-cookie']).toBeUndefined();
+      expect(jwks.headers.location).toBeUndefined();
+      expect(spies[2]).toHaveBeenCalledExactlyOnceWith();
+      for (const index of [0, 1, 3])
+        expect(spies[index]).not.toHaveBeenCalled();
+      await request(app.getHttpServer())
+        .get('/health')
+        .expect(200)
+        .expect({ status: 'ok' });
+      await request(app.getHttpServer())
+        .get('/.well-known/openid-configuration')
+        .expect(200);
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
   });
 
-  it.each(['/.well-known/jwks.json', '/oidc/userinfo'])(
+  it.each(['/oidc/userinfo'])(
     'does not add the future HTTP endpoint %s',
     async (path) => {
       await request(app.getHttpServer()).get(path).expect(404);

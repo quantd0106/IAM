@@ -12,8 +12,6 @@ import {
 } from 'vitest';
 import type { Environment } from '../config/env.schema.js';
 import { DiscoveryService } from './discovery.service.js';
-import { DiscoveryController } from './discovery.controller.js';
-import { OidcModule } from './oidc.module.js';
 
 const { forbiddenImport, forbiddenIO } = vi.hoisted(() => ({
   forbiddenImport: vi.fn(() => {
@@ -257,25 +255,15 @@ describe('DiscoveryService exact public Config-only metadata', () => {
       new Error('Discovery metadata build failed.'),
     );
   });
-  it('has only ConfigModule/service/controller, no global scope, exports or eager reads', async () => {
-    expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
-      ConfigModule,
-    ]);
-    expect(Reflect.getMetadata('providers', OidcModule) as unknown).toEqual([
-      DiscoveryService,
-    ]);
-    expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toEqual([
-      DiscoveryController,
-    ]);
-    expect(
-      (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],
-    ).toEqual([]);
-    expect(
-      Reflect.getMetadata('__module:global__', OidcModule) as unknown,
-    ).not.toBe(true);
+  it('initializes Discovery with only Config and no eager reads or signing dependency', async () => {
     const config = configFor();
     const get = vi.spyOn(config, 'getOrThrow');
-    const module = await Test.createTestingModule({ imports: [OidcModule] })
+    // OIDC module wiring is tested separately: JWKS now intentionally imports signing.
+    // Keep the pure Discovery import/I/O traps above fully enforced.
+    const module = await Test.createTestingModule({
+      imports: [ConfigModule],
+      providers: [DiscoveryService],
+    })
       .overrideProvider(ConfigService)
       .useValue(config)
       .compile();

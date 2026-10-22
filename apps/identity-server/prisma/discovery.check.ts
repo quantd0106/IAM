@@ -69,11 +69,26 @@ async function checkDiscovery(): Promise<void> {
       ),
     'Discovery metadata does not match the exact public allowlist.',
   );
-  for (const path of [
-    '/.well-known/jwks.json',
-    '/oidc/userinfo',
-    '/oauth/token',
-  ]) {
+  const jwksUrl = new URL('/.well-known/jwks.json', url);
+  assert.ok(
+    fields.jwks_uri === jwksUrl.href,
+    'Discovery must advertise the live JWKS URL exactly.',
+  );
+  const jwks = await fetch(jwksUrl, {
+    redirect: 'manual',
+    credentials: 'omit',
+    signal: AbortSignal.timeout(5000),
+  });
+  assert.equal(
+    jwks.status,
+    200,
+    'Advertised JWKS endpoint must return HTTP 200.',
+  );
+  assert.ok(jwks.headers.get('content-type')?.startsWith('application/json'));
+  assert.equal(jwks.headers.get('set-cookie'), null);
+  assert.equal(jwks.headers.get('location'), null);
+  await jwks.arrayBuffer();
+  for (const path of ['/oidc/userinfo', '/oauth/token']) {
     const staged = await fetch(new URL(path, url), {
       redirect: 'manual',
       signal: AbortSignal.timeout(5000),
@@ -86,7 +101,7 @@ async function checkDiscovery(): Promise<void> {
     await staged.arrayBuffer();
   }
   console.log(
-    'M7.1 Discovery check passed: HTTP 200, exact 16 public metadata fields, no authentication/cookie/redirect; JWKS/UserInfo/GET token remain 404. No stores or signing-key files required by this check.',
+    'M7.1/M7.2 Discovery check passed: HTTP 200, exact 16 public metadata fields, no authentication/cookie/redirect; advertised JWKS URL returns 200; UserInfo/GET token remain 404. No store clients or direct key-file reads; server JWKS requires an existing valid signing pair.',
   );
 }
 void checkDiscovery().catch(() => {

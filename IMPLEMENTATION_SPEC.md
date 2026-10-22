@@ -210,7 +210,7 @@ GET  /oidc/userinfo
 
 GET /.well-known/openid-configuration returns public HTTP 200 application/json,
 Cache-Control: no-store, without authentication, Location or Set-Cookie.
-OidcModule contains DiscoveryController -> DiscoveryService -> ConfigService only;
+DiscoveryController -> DiscoveryService -> ConfigService remains Config-only;
 building metadata performs no PostgreSQL, Redis, filesystem, signing-key, token,
 registry, request-header or network access and never mutates state.
 
@@ -248,12 +248,50 @@ request_parameter_supported and request_uri_parameter_supported are all false.
 No refresh grant, implicit/hybrid, other algorithms/auth methods, dynamic
 registration, revocation, request objects, encryption, logout or other capabilities.
 
-This is staged metadata only: jwks_uri and userinfo_endpoint are canonical URLs,
-but their HTTP routes remain 404 until M7.2 and M7.4. Advertising RS256 does not
+The advertised jwks_uri is live in M7.2 below; userinfo_endpoint remains a canonical
+URL with HTTP 404 until M7.4. Advertising RS256 does not
 implement M7.3 ID Tokens; scope/profile mapping and full OIDC E2E remain later work.
 Discovery works without provisioned key files. Explicit discovery:check fetches
-the live metadata and verifies the exact allowlist/staged routes without stores,
-login or key-file dependencies.
+the live metadata and verifies the exact allowlist/staged routes without store
+clients, login or direct key-file reads. Its JWKS HTTP assertion now requires the
+server's existing valid signing pair; Discovery itself still needs no key files.
+
+### M7.2 public JWKS
+
+GET /.well-known/jwks.json is public, unauthenticated HTTP 200 application/json.
+The exact response is {keys: [{kty: 'RSA', kid, alg: 'RS256', use: 'sig', n, e}]}:
+only keys at the top level, exactly one current key, and exactly those six JWK
+fields. No private RSA parameters (d/p/q/dp/dq/qi/oth), PEM, native key objects,
+paths, certificates or other export/config metadata are published.
+
+The existing non-global OidcModule imports SigningKeyModule and wires
+JwksController -> JwksService -> SigningKeyService.getPublicJwk(). The JWKS service
+has only that dependency, uses an explicit six-field projection (no arbitrary
+spread), and creates a fresh document/array/JWK on each build. Preserve kid/n/e
+exactly from M6.5; kid is the same configured identifier used by the M6.7 access
+token protected header. No direct filesystem, JOSE conversion, key math, second
+cache, database, Redis or session access is introduced at the JWKS boundary.
+Headers, credentials, cookies and query parameters never select/change the key.
+
+An explicit JWKS request lazily requires the complete M6.5 validated RSA signing
+pair (matching PKCS#8 private/SPKI public, RS256, >=2048 bits), not just a public
+PEM. M6.5 retains the sole loading/validation/lifetime cache boundary. Module
+construction, startup, /health and Discovery never request keys. Unavailable or
+invalid signing material/internal failures return fixed HTTP 500
+{error: 'server_error', error_description: 'JWKS request failed.'}, Cache-Control:
+no-store, without native causes, configuration values or sensitive logs.
+
+Successful JWKS responses use exactly Cache-Control: public, max-age=300, an MVP
+300-second public verification-metadata cache choice. No Set-Cookie, Location or
+WWW-Authenticate; no ETag, Last-Modified or conditional-GET behavior is added.
+There is no rotation, multiple-key publication, auto-generation or reload.
+Discovery keeps no-store and its unchanged metadata. UserInfo, ID Tokens,
+profile mapping and full OIDC E2E remain M7.3+ work.
+
+Explicit jwks:check performs only HTTP reads and JOSE public-JWK import against
+the existing local stack/signing pair; it never generates keys, opens store
+clients or prints key material. Crypto regression verifies a real M6.7 access
+token against the M7.2 public JWK, including identical kid values.
 
 ---
 
@@ -684,7 +722,7 @@ getPublicVerificationKey(), getPublicJwk() and getKeyId(); all await the same co
 validated key set. getPublicJwk() returns a defensive copy of exactly
 `{kty: 'RSA', kid: <configured kid>, alg: 'RS256', use: 'sig', n, e}`.
 No d/p/q/dp/dq/qi/oth or other private parameters/extra export fields cross this
-boundary. The public material is ready for later M7.2 but not exposed over HTTP.
+boundary. M7.2 exposes only this public projection through JWKS as specified above.
 
 Concurrent first access shares one in-flight initialization. Read/import once and
 cache a successful complete set for this service lifetime; do not re-read files
@@ -776,8 +814,8 @@ config/clock/internal failures throw only `Access token claims build failed.` wi
 no native cause or logs of subject/audience/grants/RBAC/config values. TokensModule
 has no controller; AppModule imports it without invoking build or loading keys.
 M6.7 alone combines these claims with M6.5 keys/JOSE protected headers/signing and
-the token response; M6.5 stays lazy/unchanged and JWKS remains absent. M7.1
-adds only public Discovery metadata, without signing-key access.
+the token response; M6.5 stays lazy/unchanged. M7.1 Discovery remains Config-only;
+M7.2 publishes the current public signing JWK without changing access-token claims.
 
 ### M6.7 issuance boundary
 
@@ -1605,8 +1643,9 @@ the callback. Verify exact callback/state, real hash-keyed code/session binding,
 S256 exchange, and signed access-token response using the configured public key
 and JOSE RS256 verification. Replay the same exchange must return invalid_grant
 without recreating code state. No ID/refresh token; M7.1 adds Discovery metadata
-while JWKS/UserInfo remain staged. Only the obsolete Discovery-404 assertion is
-updated in this M6.8 regression; its OAuth/session/code/token flow is unchanged.
+and M7.2 makes JWKS live, while UserInfo remains staged. Only obsolete metadata
+route-status assertions are updated in this M6.8 regression; its
+OAuth/session/code/token flow is unchanged.
 
 The check requires existing provisioned keys and never generates/rotates them.
 Missing/invalid public verification key yields a fixed prerequisite message without

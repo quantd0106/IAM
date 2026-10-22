@@ -864,7 +864,7 @@ không native cause/PEM/path logs, không cache key set dở dang. Public JWK ch
 
 Key paths trong `.env.example`/Compose không được load lúc startup hay
 `GET /health`. Provision development explicit theo mục 32; không có production
-rotation hoặc JWKS endpoint; Discovery metadata có ở mục 33. Không commit private key.
+rotation; public JWKS có ở mục 34, Discovery metadata ở mục 33. Không commit private key.
 Tests dùng ephemeral keys và cleanup temporary files, không cần operational key.
 
 ## 31. Internal access-token claim capability
@@ -879,7 +879,7 @@ Chi tiết validation/defensive copies nằm ở `IMPLEMENTATION_SPEC.md` mục 
 
 Capability không đọc DB/Redis/network/key files, không import/call signing service
 hay JOSE. M9.1-M9.3 mới persist/resolve RBAC, M9.4 mới cung cấp resolved values.
-M6.7 kết hợp claims và signing qua service riêng; JWKS vẫn staged, Discovery có ở mục 33.
+M6.7 kết hợp claims và signing qua service riêng; Discovery/JWKS có ở mục 33–34.
 
 ## 32. Authorization-code access-token issuance (M6.7)
 
@@ -946,12 +946,40 @@ RS256, client_secret_basic + none và S256. claims/request/request_uri đều un
 Không advertise application-specific banking scope hoặc refresh grant.
 Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec mục 4.
 
-JWKS/UserInfo URLs đã được advertise nhưng HTTP endpoints vẫn 404 cho tới M7.2/M7.4.
+JWKS URL đã live trong M7.2 (mục 34); UserInfo vẫn 404 cho tới M7.4.
 Chưa phát ID Token, map profile/email claims hoặc hoàn tất OIDC E2E. M6.8 vẫn kiểm tra
-OAuth pipeline cũ, chỉ đổi expectation Discovery từ 404 sang 200.
+OAuth pipeline cũ, chỉ cập nhật expectation Discovery/JWKS từ 404 sang 200.
 
 ```bash
 pnpm --filter identity-server discovery:check
 ```
 
-Live check chỉ dùng issuer và HTTP, không yêu cầu DB/Redis clients, login hay key files.
+Live check chỉ dùng issuer và HTTP, không mở DB/Redis clients, login hoặc đọc key
+files trực tiếp. Assertion JWKS 200 yêu cầu server đã có signing pair hợp lệ;
+fetch Discovery riêng vẫn không cần key files.
+
+## 34. Public JWKS (M7.2)
+
+`GET /.well-known/jwks.json` trả public 200 JSON với đúng một current public key:
+`{keys: [{kty: "RSA", kid, alg: "RS256", use: "sig", n, e}]}`. Top-level chỉ có
+keys; JWK chỉ sáu fields đó, không private RSA parameters, PEM, paths hoặc native
+key objects. kid/n/e lấy nguyên vẹn qua `SigningKeyService.getPublicJwk()`;
+kid khớp protected header của access token M6.7. Không lựa chọn key theo query,
+headers hoặc cookie, không auth/redirect/Set-Cookie.
+
+Cache thành công là `public, max-age=300` (MVP: 300 giây); không ETag,
+Last-Modified hay conditional GET. Discovery giữ `no-store`. JWKS request mới
+gọi lazy M6.5 để load/validate cả signing pair; startup/health/Discovery không
+gọi key getters. Thiếu/hỏng pair trả fixed 500 `server_error` /
+`JWKS request failed.`, `no-store`, không native detail hoặc sensitive logs.
+Không đọc PEM/export JWK lần nữa ở JWKS layer, không second cache, rotation,
+multi-key, auto-generation hoặc DB/Redis dependency. UserInfo/ID Token/refresh
+và full OIDC E2E chưa được implement bởi M7.2.
+
+```bash
+pnpm --filter identity-server jwks:check
+```
+
+Probe HTTP read-only kiểm tra shape/allowlist, kid, cache/headers và JOSE import
+public JWK để verify RS256; cần stack và signing pair có sẵn, không tạo/rotate
+keys, mutate stores hoặc in key material/configuration.

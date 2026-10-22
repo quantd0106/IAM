@@ -137,7 +137,7 @@ describe('GET /.well-known/openid-configuration', () => {
       expect(response.text.includes('canary')).toBe(false);
     },
   );
-  it.each(['/.well-known/jwks.json', '/oidc/userinfo', '/oauth/token'])(
+  it.each(['/oidc/userinfo', '/oauth/token'])(
     'does not introduce staged/unsupported route %s',
     async (path) => {
       await request(app.getHttpServer()).get(path).expect(404);

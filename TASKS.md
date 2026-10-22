@@ -756,7 +756,7 @@ Acceptance criteria:
 
 ## M7.2 — JWKS endpoint
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
