@@ -25,6 +25,11 @@ enum ClientType {
   CONFIDENTIAL
 }
 
+enum RefreshTokenFamilyStatus {
+  ACTIVE
+  REVOKED
+}
+
 model User {
   id          String     @id @default(uuid()) @db.Uuid
   email       String     @unique
@@ -34,8 +39,9 @@ model User {
   createdAt   DateTime   @default(now()) @map("created_at")
   updatedAt   DateTime   @updatedAt @map("updated_at")
 
-  credential Credential?
-  sessions   Session[]
+  credential           Credential?
+  sessions             Session[]
+  refreshTokenFamilies RefreshTokenFamily[]
 
   @@map("users")
 }
@@ -61,10 +67,31 @@ model Session {
   lastActivityAt DateTime      @default(now()) @map("last_activity_at")
   expiresAt      DateTime      @map("expires_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user                 User                 @relation(fields: [userId], references: [id])
+  refreshTokenFamilies RefreshTokenFamily[]
 
   @@index([userId])
   @@map("sessions")
+}
+
+model RefreshTokenFamily {
+  id              String                   @id @default(uuid()) @db.Uuid
+  userId          String                   @map("user_id") @db.Uuid
+  clientId        String                   @map("client_id") @db.Uuid
+  sessionId       String                   @map("session_id") @db.Uuid
+  status          RefreshTokenFamilyStatus @default(ACTIVE)
+  reuseDetectedAt DateTime?                @map("reuse_detected_at")
+  revokedAt       DateTime?                @map("revoked_at")
+  createdAt       DateTime                 @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client  Client  @relation(fields: [clientId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, status])
+  @@index([clientId, status])
+  @@index([sessionId, status])
+  @@map("refresh_token_families")
 }
 
 model Client {
@@ -78,8 +105,9 @@ model Client {
   accessTokenAudience String?    @map("access_token_audience")
   refreshTokenTtl     Int        @default(2592000) @map("refresh_token_ttl")
 
-  redirectUris  ClientRedirectUri[]
-  allowedScopes ClientScope[]
+  redirectUris         ClientRedirectUri[]
+  allowedScopes        ClientScope[]
+  refreshTokenFamilies RefreshTokenFamily[]
 
   @@map("clients")
 }

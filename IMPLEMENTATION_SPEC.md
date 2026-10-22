@@ -1111,11 +1111,51 @@ existing standalone UserInfo check and ID-token-as-Bearer rejection tests.
 Use M6.8's unique ownership proof, finally logout/runtime/code/FK-ordered row
 cleanup, eight database fingerprints and unrelated Redis value/absolute-expiry
 snapshots. Compare published JWKS before/after; no key writes, canonical registry
-changes, seed, flush or sensitive output. This completes M7 only; M8 remains absent.
+changes, seed, flush or sensitive output. M8.1 below adds only family persistence;
+refresh-token issuance/rotation remains absent.
 
 ---
 
 ## 11. Refresh Token
+
+### M8.1 RefreshTokenFamily persistence baseline
+
+RefreshTokenFamily maps to refresh_token_families and contains exactly id
+(Prisma-generated UUID primary key), required UUID userId/clientId/sessionId
+(user_id/client_id/session_id), status (RefreshTokenFamilyStatus, ACTIVE default),
+nullable reuseDetectedAt/revokedAt (reuse_detected_at/revoked_at), and createdAt
+(created_at, database current timestamp default). All timestamps follow the existing
+Prisma DateTime/PostgreSQL TIMESTAMP(3) convention. The family binds a future
+rotated-token lineage to one User, internal Client.id (NOT protocol Client.clientId)
+and central Session. Each has a refreshTokenFamilies back-relation.
+
+The new enum contains only ACTIVE and REVOKED. The three required foreign keys
+explicitly use ON DELETE RESTRICT / ON UPDATE CASCADE, matching existing required
+relations; no existing relation/delete behavior changes. Security history must not
+disappear as an implicit cascade. Add only nonunique indexes (user_id,status),
+(client_id,status), (session_id,status), supporting future scoped family lookup and
+revocation as well as FK lookups. Multiple families for the same bindings remain
+valid; there is no owner/client/session unique constraint or extra CHECK policy.
+
+reuseDetectedAt is future forensic/security metadata; revokedAt records future
+revocation time. M8.7 may later revoke a family and its related IdP session on reuse,
+but M8.1 defines no transitions, service, repository, HTTP route or runtime behavior.
+Future M8.2 RefreshToken rows will reference family.id. There is no RefreshToken
+model or RefreshTokenStatus enum yet, and no raw token, token hash, parent token,
+issuance/expiry, scope/permission/role/audience or TTL snapshot in this family.
+Client.refreshTokenTtl remains unchanged and will govern later issuance.
+
+The additive migration creates only the family enum/table/indexes/foreign keys,
+without old-row updates, backfill or seeded family rows. Existing seed runner is
+unchanged: canonical registry remains three clients/four scopes and existing exact
+redirects/assignments/settings. A small explicit local PostgreSQL rollback probe
+verifies generated model/enum, exact columns/defaults, multiplicity, relations,
+indexes and FK/delete integrity without committed fixture rows. Seed regression
+also verifies it never populates families. OAuth-only token success remains four
+fields and OIDC success five; neither includes refresh_token. Discovery, JWKS,
+access/ID Tokens, UserInfo and M6/M7 behavior remain unchanged. M8.2+ is separate work.
+
+### Future individual refresh-token policy (M8.2+)
 
 Format:
 

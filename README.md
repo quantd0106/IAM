@@ -1104,8 +1104,38 @@ trước khi nhận preferred_username/email. M6.8 vẫn riêng biệt, OAuth-on
 Finally logout và cleanup chỉ owned User/Credential/Session/code/runtime state;
 kiểm fingerprint tám bảng, unrelated Redis values/absolute expiry và published JWKS
 không đổi. Không sửa seed/registry/keys, flush Redis hoặc in token/code/nonce/password/
-cookie/PII. Không triển khai refresh-token/M8+.
+cookie/PII. M7.6 không triển khai refresh-token runtime; M8.1 chỉ thêm persistence
+baseline bên dưới.
 
 Ghi chú M7.5 chưa thay đổi: khi có profile hoặc email, mapper select/validate cả
 username và email; persisted field không được yêu cầu nhưng hỏng vẫn có thể gây 500.
 Đây là hardening note không chặn OIDC flow, không refactor trong M7.6.
+
+## 38. Refresh-token family persistence baseline (M8.1)
+
+`RefreshTokenFamily` lưu family/root security record gắn với User, internal Client.id
+và central Session. Trạng thái chỉ ACTIVE/REVOKED, cùng createdAt và nullable
+reuseDetectedAt/revokedAt. Ba FK đều ON DELETE RESTRICT / ON UPDATE CASCADE;
+indexes theo từng FK + status, không unique trên tổ hợp user/client/session.
+Chi tiết tám fields canonical nằm ở implementation spec mục 11.
+
+Chưa có individual RefreshToken model, token/hash/expiry/scope snapshot trong family,
+runtime issuance/rotation/reuse/revocation service hoặc refresh token qua HTTP.
+OAuth/OIDC token responses, Discovery/JWKS/UserInfo giữ nguyên M7.6. Seed runner
+không đổi và không tạo family rows; Client.refreshTokenTtl giữ nguyên.
+
+Migration được apply explicit, không chạy khi startup/seed:
+
+```bash
+pnpm --filter identity-server prisma:generate
+pnpm --filter identity-server prisma validate
+pnpm --filter identity-server prisma migrate deploy
+pnpm --filter identity-server prisma migrate status
+pnpm --filter identity-server refresh-token-family:check
+pnpm --filter identity-server seed:check
+```
+
+Family probe chỉ dùng PostgreSQL local, kiểm exact schema/defaults/indexes/FKs,
+multiple families và parent delete restrictions. Fixtures nằm trong transaction
+rollback; fingerprint chín bảng phải giữ nguyên. Seed check vẫn chạy hai lần trong
+transaction rollback và kiểm không populate family. Không cần token/runtime service.

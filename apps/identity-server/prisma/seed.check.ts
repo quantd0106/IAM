@@ -54,6 +54,8 @@ const snapshot = (
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM scopes t
   UNION ALL SELECT 'client_scopes', COUNT(*)::int,
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY client_id, scope_id)::text, '[]')) FROM client_scopes t
+  UNION ALL SELECT 'refresh_token_families', COUNT(*)::int,
+    md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM refresh_token_families t
   UNION ALL SELECT '_prisma_migrations', COUNT(*)::int,
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM _prisma_migrations t
   ORDER BY relation
@@ -80,6 +82,7 @@ async function checkSeed(): Promise<void> {
     try {
       await prisma.$transaction(
         async (tx) => {
+          const familiesBefore = await tx.refreshTokenFamily.count();
           const existingClients = await tx.client.findMany({
             where: {
               clientId: { in: expected.map((client) => client.clientId) },
@@ -117,6 +120,7 @@ async function checkSeed(): Promise<void> {
           });
 
           assert.equal(await applyDemoRegistry(tx), 1);
+          assert.equal(await tx.refreshTokenFamily.count(), familiesBefore);
           const clients = await tx.client.findMany({
             where: {
               clientId: { in: expected.map((client) => client.clientId) },
@@ -212,6 +216,7 @@ async function checkSeed(): Promise<void> {
           );
           const first = await snapshot(tx);
           assert.equal(await applyDemoRegistry(tx), 1);
+          assert.equal(await tx.refreshTokenFamily.count(), familiesBefore);
           // Includes counts, UUIDs, exact links, confidential hashes and all unrelated rows.
           assert.ok(
             JSON.stringify(await snapshot(tx)) === JSON.stringify(first),
@@ -247,7 +252,7 @@ async function checkSeed(): Promise<void> {
       'Demo seed passed: exact 3 clients/3 redirects/4 scopes/10 assignments; UUIDs/defaults/PUBLIC NULL/confidential lifecycle/PK/FKs; two runs unchanged including hashes; unrelated fixture unchanged.',
     );
     console.log(
-      'Seed probe rollback passed: all domain and migration rows restored unchanged; no probe-owned data remains.',
+      'Seed probe rollback passed: all nine domain/migration table snapshots restored unchanged; both seed runs preserve refresh-token families; no probe-owned data remains.',
     );
   } finally {
     await prisma.$disconnect();

@@ -817,7 +817,7 @@ Depends on: M6.6, M3
 
 ## M8.1 — RefreshTokenFamily model
 
-Status: [ ]
+Status: [x]
 
 ## M8.2 — RefreshToken model
 
