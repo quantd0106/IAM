@@ -802,7 +802,7 @@ email
 
 ## M7.6 — OIDC E2E
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 
