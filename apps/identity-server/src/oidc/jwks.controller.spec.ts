@@ -26,6 +26,8 @@ import { JwksService } from './jwks.service.js';
 import { OidcModule } from './oidc.module.js';
 import { IdTokenClaimsService } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
+import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
+import { UserInfoController } from './userinfo.controller.js';
 
 describe('public GET /.well-known/jwks.json', () => {
   let app: INestApplication<Server>;
@@ -98,10 +100,12 @@ describe('public GET /.well-known/jwks.json', () => {
       JwksService,
       IdTokenClaimsService,
       IdTokenIssuerService,
+      UserInfoAccessTokenService,
     ]);
     expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toEqual([
       DiscoveryController,
       JwksController,
+      UserInfoController,
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],

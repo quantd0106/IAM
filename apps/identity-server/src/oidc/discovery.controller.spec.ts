@@ -137,7 +137,19 @@ describe('GET /.well-known/openid-configuration', () => {
       expect(response.text.includes('canary')).toBe(false);
     },
   );
-  it.each(['/oidc/userinfo', '/oauth/token'])(
+  it('exposes UserInfo as a Bearer-protected resource without requiring keys for missing credentials', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/oidc/userinfo')
+      .expect(401);
+    expect(response.headers['www-authenticate']).toBe(
+      'Bearer realm="userinfo"',
+    );
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers.pragma).toBe('no-cache');
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(response.headers.location).toBeUndefined();
+  });
+  it.each(['/oauth/token'])(
     'does not introduce staged/unsupported route %s',
     async (path) => {
       await request(app.getHttpServer()).get(path).expect(404);

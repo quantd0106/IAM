@@ -204,6 +204,7 @@ POST /oauth/revoke
 GET  /.well-known/openid-configuration
 GET  /.well-known/jwks.json
 GET  /oidc/userinfo
+POST /oidc/userinfo
 ```
 
 ### M7.1 OpenID Provider Discovery
@@ -248,8 +249,8 @@ request_parameter_supported and request_uri_parameter_supported are all false.
 No refresh grant, implicit/hybrid, other algorithms/auth methods, dynamic
 registration, revocation, request objects, encryption, logout or other capabilities.
 
-The advertised jwks_uri is live in M7.2 below; userinfo_endpoint remains a canonical
-URL with HTTP 404 until M7.4. Advertising RS256 does not integrate ID Tokens into
+The advertised jwks_uri is live in M7.2 below; userinfo_endpoint is live in M7.4
+as a Bearer-protected resource (401 without credentials). Advertising RS256 does not integrate ID Tokens into
 HTTP token responses; the internal M7.3 capability is described in section 10.
 Scope/profile mapping and full OIDC E2E remain later work.
 Discovery works without provisioned key files. Explicit discovery:check fetches
@@ -286,13 +287,84 @@ Successful JWKS responses use exactly Cache-Control: public, max-age=300, an MVP
 300-second public verification-metadata cache choice. No Set-Cookie, Location or
 WWW-Authenticate; no ETag, Last-Modified or conditional-GET behavior is added.
 There is no rotation, multiple-key publication, auto-generation or reload.
-Discovery keeps no-store and its unchanged metadata. ID Token HTTP integration,
-UserInfo, profile mapping and full OIDC E2E remain later work; M7.3 is internal only.
+Discovery keeps no-store and its unchanged metadata. M7.4 adds sub-only UserInfo
+below. ID Token HTTP integration, profile mapping and full OIDC E2E remain later
+work; M7.3 is internal only.
 
 Explicit jwks:check performs only HTTP reads and JOSE public-JWK import against
 the existing local stack/signing pair; it never generates keys, opens store
 clients or prints key material. Crypto regression verifies a real M6.7 access
 token against the M7.2 public JWK, including identical kid values.
+
+### M7.4 sub-only UserInfo protected resource
+
+GET and POST /oidc/userinfo share identical authentication and response semantics.
+The existing non-global OidcModule adds only UserInfoController and
+UserInfoAccessTokenService, using its existing ConfigModule/SigningKeyModule.
+There is no Prisma/Redis/OAuth/Tokens module import, User lookup, current-user
+status check, session touch, introspection, denylist, revocation or store write.
+Tokens remain stateless until expiry. Startup, health and Discovery stay lazy;
+only explicit credential validation requests the signing-key capability.
+
+Authorization is the only token transport. Accept a case-insensitive Bearer
+scheme followed by one or more SP and one token68 value, without trimming,
+decoding or changing the compact token, following
+[RFC 6750 section 2.1](https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1)
+and [HTTP authentication scheme semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-11.1).
+Reject malformed/structured/duplicate Authorization fields; never fall back to
+cookies, Basic, query access_token or POST body access_token. Host/Origin/forwarded
+headers, query and body fields cannot change authentication or response claims.
+
+Read the exact validated ISSUER_URL from ConfigService. Reuse only M6.5
+getPublicVerificationKey() and getKeyId(); do not fetch own JWKS, read/export PEM,
+use a private signing getter, create another cache or implement crypto. jwtVerify
+restricts algorithms to ['RS256'], verifies signature/exact issuer/expiry and
+requires all eight M6.6 claim names. After verification require exact protected
+kid equality and exactly the canonical payload iss/sub/aud/iat/exp/scope/roles/
+permissions. Validate nonempty string issuer/audience, UUID sub, nonnegative safe
+integer NumericDates with exp > iat, canonical RFC 6749 scope syntax via the
+existing parser, and arrays of nonempty opaque role/permission strings ([] valid).
+Do not transform claims or infer privileges. ID Tokens fail this access-token
+shape check despite their valid shared issuer/key/signature/subject/expiry.
+
+MVP audience compatibility decision: aud must be a present nonempty scalar
+string, but UserInfo does NOT enforce a fixed endpoint-specific audience. M6.7
+currently issues one business resource audience per client (student-api,
+banking-api or identity-server); M7.4 neither changes that model nor adds another
+audience/token or hard-coded mapping. The boundary is trusted RS256 issuer-signed
+canonical access token + exact issuer/kid/expiry + exact openid scope. This is an
+explicit MVP policy, NOT a claim of RFC 9068 JWT Access Token Profile compliance.
+Business resource APIs must still check their own expected audience. A future
+multi-audience/resource-indicator design may tighten UserInfo separately.
+
+Require tokenized, case-sensitive openid, never a substring/alias/default. A valid
+request returns HTTP 200 application/json with exactly {sub: verifiedToken.sub},
+even for openid profile email. Do not return any other token or user claim.
+Profile/email lookup/mapping remains M7.5; no schema/profile columns are added.
+
+All UserInfo responses set Cache-Control: no-store and Pragma: no-cache, without
+Set-Cookie or Location. Missing Authorization returns empty 401 with
+WWW-Authenticate: Bearer realm="userinfo" (no error parameter). Malformed Bearer,
+invalid JWT/signature/algorithm/issuer/expiry/kid/claims or ID Token confusion
+returns fixed 401 {error: 'invalid_token', error_description: 'Invalid access token.'}
+with Bearer realm="userinfo", error="invalid_token". A valid token without openid
+returns fixed 403 {error: 'insufficient_scope', error_description:
+'The access token does not grant UserInfo access.'} with Bearer realm="userinfo",
+error="insufficient_scope", scope="openid", and no subject.
+
+Key loading/configuration/unexpected internal failures are not invalid credentials:
+return fixed 500 {error: 'server_error', error_description: 'UserInfo request failed.'}
+without Bearer challenge or native causes/details. Only recognized credential JOSE
+errors map to invalid_token; all other faults fail closed as server errors.
+Never log headers, compact JWTs, token claims or key/config material.
+
+Explicit userinfo:check uses the existing M6.7 issuer and configured signing pair
+to create request-local test tokens, then checks GET/POST success, missing auth,
+insufficient_scope and real M7.3 ID Token rejection. It adds no users/store clients,
+does not generate/rotate keys and is not full OIDC E2E. Discovery:check now checks
+the advertised UserInfo URL for 401 + Bearer challenge; metadata remains unchanged.
+POST /oauth/token still returns only its four access-token fields, without
+id_token/refresh_token. M7.3 remains internal; integration belongs to M7.6.
 
 ---
 
@@ -1692,7 +1764,7 @@ the callback. Verify exact callback/state, real hash-keyed code/session binding,
 S256 exchange, and signed access-token response using the configured public key
 and JOSE RS256 verification. Replay the same exchange must return invalid_grant
 without recreating code state. No ID/refresh token; M7.1 adds Discovery metadata
-and M7.2 makes JWKS live, while UserInfo remains staged. Only obsolete metadata
+and M7.2 makes JWKS live; M7.4 UserInfo requires Bearer credentials. Only obsolete metadata
 route-status assertions are updated in this M6.8 regression; its
 OAuth/session/code/token flow is unchanged.
 

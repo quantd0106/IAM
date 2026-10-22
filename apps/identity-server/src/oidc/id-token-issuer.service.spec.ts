@@ -36,6 +36,8 @@ import {
 } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
 import { OidcModule } from './oidc.module.js';
+import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
+import { UserInfoController } from './userinfo.controller.js';
 
 const input: IdTokenClaimsInput = {
   subject: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
@@ -308,7 +310,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
       expect(getKid).not.toHaveBeenCalled();
     },
   );
-  it('registers internal-only providers without exports/new controllers/global scope or eager build/sign/key access', async () => {
+  it('keeps ID-token providers internal and lazy alongside the current OIDC controllers', async () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
@@ -318,10 +320,12 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
       JwksService,
       IdTokenClaimsService,
       IdTokenIssuerService,
+      UserInfoAccessTokenService,
     ]);
     expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toEqual([
       DiscoveryController,
       JwksController,
+      UserInfoController,
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],

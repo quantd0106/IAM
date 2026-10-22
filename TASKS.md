@@ -781,7 +781,7 @@ nonce
 
 ## M7.4 — UserInfo endpoint
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

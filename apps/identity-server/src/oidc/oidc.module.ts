@@ -7,15 +7,18 @@ import { JwksController } from './jwks.controller.js';
 import { JwksService } from './jwks.service.js';
 import { IdTokenClaimsService } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
+import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
+import { UserInfoController } from './userinfo.controller.js';
 
 @Module({
   imports: [ConfigModule, SigningKeyModule],
-  controllers: [DiscoveryController, JwksController],
+  controllers: [DiscoveryController, JwksController, UserInfoController],
   providers: [
     DiscoveryService,
     JwksService,
     IdTokenClaimsService,
     IdTokenIssuerService,
+    UserInfoAccessTokenService,
   ],
 })
 export class OidcModule {}

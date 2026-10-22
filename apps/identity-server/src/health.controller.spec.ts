@@ -223,10 +223,33 @@ describe('Identity Server', () => {
     }
   });
 
-  it.each(['/oidc/userinfo'])(
-    'does not add the future HTTP endpoint %s',
-    async (path) => {
-      await request(app.getHttpServer()).get(path).expect(404);
+  it.each(['get', 'post'] as const)(
+    'serves %s UserInfo missing-credential challenge without stores or key loading',
+    async (method) => {
+      const keys = app.get(SigningKeyService);
+      const spies = (
+        [
+          'getPrivateSigningKey',
+          'getPublicVerificationKey',
+          'getPublicJwk',
+          'getKeyId',
+        ] as const
+      ).map((name) => vi.spyOn(keys, name));
+      try {
+        const response = await request(app.getHttpServer())
+          [method]('/oidc/userinfo')
+          .expect(401);
+        expect(response.headers['www-authenticate']).toBe(
+          'Bearer realm="userinfo"',
+        );
+        expect(response.headers['cache-control']).toBe('no-store');
+        expect(response.headers.pragma).toBe('no-cache');
+        expect(response.headers['set-cookie']).toBeUndefined();
+        expect(response.headers.location).toBeUndefined();
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
     },
   );
 

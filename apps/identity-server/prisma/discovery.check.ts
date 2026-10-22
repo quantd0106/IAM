@@ -88,7 +88,28 @@ async function checkDiscovery(): Promise<void> {
   assert.equal(jwks.headers.get('set-cookie'), null);
   assert.equal(jwks.headers.get('location'), null);
   await jwks.arrayBuffer();
-  for (const path of ['/oidc/userinfo', '/oauth/token']) {
+  const userinfoUrl = new URL('/oidc/userinfo', url);
+  assert.ok(fields.userinfo_endpoint === userinfoUrl.href);
+  const userinfo = await fetch(userinfoUrl, {
+    redirect: 'manual',
+    credentials: 'omit',
+    signal: AbortSignal.timeout(5000),
+  });
+  assert.equal(
+    userinfo.status,
+    401,
+    'UserInfo must require a Bearer access token.',
+  );
+  assert.equal(
+    userinfo.headers.get('www-authenticate'),
+    'Bearer realm="userinfo"',
+  );
+  assert.equal(userinfo.headers.get('cache-control'), 'no-store');
+  assert.equal(userinfo.headers.get('pragma'), 'no-cache');
+  assert.equal(userinfo.headers.get('set-cookie'), null);
+  assert.equal(userinfo.headers.get('location'), null);
+  await userinfo.arrayBuffer();
+  for (const path of ['/oauth/token']) {
     const staged = await fetch(new URL(path, url), {
       redirect: 'manual',
       signal: AbortSignal.timeout(5000),
@@ -101,7 +122,7 @@ async function checkDiscovery(): Promise<void> {
     await staged.arrayBuffer();
   }
   console.log(
-    'M7.1/M7.2 Discovery check passed: HTTP 200, exact 16 public metadata fields, no authentication/cookie/redirect; advertised JWKS URL returns 200; UserInfo/GET token remain 404. No store clients or direct key-file reads; server JWKS requires an existing valid signing pair.',
+    'M7.1/M7.2/M7.4 Discovery check passed: HTTP 200, exact 16 public metadata fields; advertised JWKS returns 200; UserInfo returns 401 with Bearer challenge; GET token remains 404. No store clients or direct key-file reads; server JWKS requires an existing valid signing pair.',
   );
 }
 void checkDiscovery().catch(() => {
