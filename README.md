@@ -1119,8 +1119,9 @@ reuseDetectedAt/revokedAt. Ba FK đều ON DELETE RESTRICT / ON UPDATE CASCADE;
 indexes theo từng FK + status, không unique trên tổ hợp user/client/session.
 Chi tiết tám fields canonical nằm ở implementation spec mục 11.
 
-Chưa có individual RefreshToken model, token/hash/expiry/scope snapshot trong family,
-runtime issuance/rotation/reuse/revocation service hoặc refresh token qua HTTP.
+M8.1 chưa tạo individual token; M8.2 bên dưới thêm persistence model riêng.
+Family vẫn không có token/hash/expiry/scope snapshot; chưa có runtime
+issuance/rotation/reuse/revocation service hoặc refresh token qua HTTP.
 OAuth/OIDC token responses, Discovery/JWKS/UserInfo giữ nguyên M7.6. Seed runner
 không đổi và không tạo family rows; Client.refreshTokenTtl giữ nguyên.
 
@@ -1137,5 +1138,37 @@ pnpm --filter identity-server seed:check
 
 Family probe chỉ dùng PostgreSQL local, kiểm exact schema/defaults/indexes/FKs,
 multiple families và parent delete restrictions. Fixtures nằm trong transaction
-rollback; fingerprint chín bảng phải giữ nguyên. Seed check vẫn chạy hai lần trong
-transaction rollback và kiểm không populate family. Không cần token/runtime service.
+rollback; từ M8.2 fingerprint mười bảng gồm cả refresh_tokens phải giữ nguyên.
+Seed check vẫn chạy hai lần trong transaction rollback và kiểm không populate hoặc
+thay đổi family/token rows. Không cần token/runtime service.
+
+## 39. Individual refresh-token persistence (M8.2)
+
+`RefreshToken` lưu đúng chín fields: id, familyId, tokenHash, parentTokenId, status,
+issuedAt, expiresAt, consumedAt, revokedAt. Ownership user/client/session chỉ nằm
+trên family đã thiết lập ở M8.1, không lặp lại trên token. Enum token chỉ có
+ACTIVE/CONSUMED/REVOKED; expiry là timestamp, không phải status riêng.
+
+tokenHash là required unique text, chưa chốt encoding/độ dài hoặc tính SHA-256.
+parentTokenId nullable unique tạo self-relation parent/child: nhiều roots NULL
+hợp lệ, mỗi parent có tối đa một child. Hai FK family/parent đều DELETE RESTRICT /
+UPDATE CASCADE. Indexes familyId + status và familyId + issuedAt phục vụ lookup/history.
+Same-family ancestry, chống cycle và atomic rotation là runtime policy của task sau,
+không được giả định chỉ nhờ các FK/unique này.
+
+Sau generate/validate/deploy/status như mục 38, chạy:
+
+```bash
+pnpm --filter identity-server refresh-token-family:check
+pnpm --filter identity-server refresh-token:check
+pnpm --filter identity-server seed:check
+```
+
+Token probe dùng fixtures PostgreSQL local trong transaction luôn rollback, kiểm
+exact schema/defaults, no raw-token columns, lineage RT1 -> RT2 -> RT3, unique hash /
+one child, nhiều NULL roots, FK và delete restrictions; fingerprint mười bảng phải
+giữ nguyên. Fixture tokenHash chỉ là text kiểm persistence, không phải token thật.
+Seed runner không đổi, không seed family/token. Chưa có generator/hasher, issuance,
+rotation, reuse/revocation hoặc refresh HTTP behavior. `/oauth/token` vẫn đúng bốn
+fields OAuth hoặc năm fields OIDC, không refresh_token; Discovery vẫn chỉ advertise
+authorization_code. M8.3+ chưa triển khai.

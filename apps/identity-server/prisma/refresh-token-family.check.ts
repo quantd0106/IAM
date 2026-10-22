@@ -32,6 +32,8 @@ const snapshot = (
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY client_id, scope_id)::text, '[]')) FROM client_scopes t
   UNION ALL SELECT 'refresh_token_families', COUNT(*)::int,
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM refresh_token_families t
+  UNION ALL SELECT 'refresh_tokens', COUNT(*)::int,
+    md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM refresh_tokens t
   UNION ALL SELECT '_prisma_migrations', COUNT(*)::int,
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM _prisma_migrations t
   ORDER BY relation
@@ -154,14 +156,7 @@ async function checkFamilies(): Promise<void> {
         'CREATE INDEX refresh_token_families_user_id_status_idx ON public.refresh_token_families USING btree (user_id, status)',
       ],
     );
-    const future = await prisma.$queryRaw<{ absent: boolean }[]>`
-      SELECT to_regclass('public.refresh_tokens') IS NULL AND
-        to_regtype('public."RefreshTokenStatus"') IS NULL AS absent
-    `;
-    assert.ok(
-      future.length === 1 && future[0].absent,
-      'M8.2 objects must not exist.',
-    );
+    // M8.2 now owns individual-token persistence; keep family invariants unchanged.
     before = await snapshot(prisma);
     try {
       await prisma.$transaction(
@@ -316,14 +311,14 @@ async function checkFamilies(): Promise<void> {
       if (before !== undefined)
         assert.ok(
           JSON.stringify(await snapshot(prisma)) === JSON.stringify(before),
-          'Family fixtures must roll back; all nine table fingerprints must remain unchanged.',
+          'Family fixtures must roll back; all ten table fingerprints must remain unchanged.',
         );
     } finally {
       await prisma.$disconnect();
     }
   }
   console.log(
-    'M8.1 family persistence check passed: exact eight fields/enum/defaults/UUID PK/three nonunique FK-status indexes; three required restrictive FKs and parent back-relations; duplicate bindings allowed, nonexistent references and parent deletes rejected. Owned fixtures rolled back; nine table fingerprints unchanged; no individual tokens, runtime refresh behavior or sensitive values printed.',
+    'M8.1 family persistence check passed: exact eight fields/enum/defaults/UUID PK/three nonunique FK-status indexes; three required restrictive FKs and parent back-relations; duplicate bindings allowed, nonexistent references and parent deletes rejected. Owned fixtures rolled back; ten table fingerprints unchanged; no runtime refresh behavior or sensitive values printed.',
   );
 }
 

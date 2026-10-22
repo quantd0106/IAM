@@ -821,7 +821,7 @@ Status: [x]
 
 ## M8.2 — RefreshToken model
 
-Status: [ ]
+Status: [x]
 
 Fields:
 

@@ -1140,8 +1140,8 @@ valid; there is no owner/client/session unique constraint or extra CHECK policy.
 reuseDetectedAt is future forensic/security metadata; revokedAt records future
 revocation time. M8.7 may later revoke a family and its related IdP session on reuse,
 but M8.1 defines no transitions, service, repository, HTTP route or runtime behavior.
-Future M8.2 RefreshToken rows will reference family.id. There is no RefreshToken
-model or RefreshTokenStatus enum yet, and no raw token, token hash, parent token,
+At M8.1 there was no individual RefreshToken model/status; M8.2 below adds those
+rows referencing family.id. There is still no raw token, token hash, parent token,
 issuance/expiry, scope/permission/role/audience or TTL snapshot in this family.
 Client.refreshTokenTtl remains unchanged and will govern later issuance.
 
@@ -1153,9 +1153,67 @@ verifies generated model/enum, exact columns/defaults, multiplicity, relations,
 indexes and FK/delete integrity without committed fixture rows. Seed regression
 also verifies it never populates families. OAuth-only token success remains four
 fields and OIDC success five; neither includes refresh_token. Discovery, JWKS,
-access/ID Tokens, UserInfo and M6/M7 behavior remain unchanged. M8.2+ is separate work.
+access/ID Tokens, UserInfo and M6/M7 behavior remain unchanged.
 
-### Future individual refresh-token policy (M8.2+)
+### M8.2 normalized RefreshToken persistence
+
+M8.1 established RefreshTokenFamily as the canonical user/client/session binding.
+The older generic metadata list duplicated client_id/user_id/session_id on each
+token; M8.2 intentionally refines it: individual tokens reference only familyId,
+then resolve User/Client/Session through that family. Do not duplicate those three
+bindings, protocol client ID or authorization-context snapshots on RefreshToken.
+
+RefreshToken maps to refresh_tokens with exactly nine scalar fields:
+
+```text
+id            UUID primary key, Prisma uuid() default
+familyId      required UUID -> RefreshTokenFamily.id, mapped family_id
+tokenHash     required globally unique text, mapped token_hash
+parentTokenId nullable unique UUID -> RefreshToken.id, mapped parent_token_id
+status        RefreshTokenStatus, required ACTIVE default
+issuedAt      required DateTime, now() default, mapped issued_at
+expiresAt     required DateTime, no default, mapped expires_at
+consumedAt    nullable DateTime, mapped consumed_at
+revokedAt     nullable DateTime, mapped revoked_at
+```
+
+RefreshTokenStatus is exactly ACTIVE / CONSUMED / REVOKED. Expiry is evaluated
+temporally from expiresAt, not an EXPIRED state; reuse is a future family-level
+security event, not a REUSED state. Timestamps retain PostgreSQL TIMESTAMP(3).
+No updatedAt, replacedByTokenId, duplicated owner/client/session IDs, TTL integer,
+scope/roles/permissions/audience, raw token or secret column is added.
+
+Required family relation has the tokens back-relation on RefreshTokenFamily. Named
+RefreshTokenLineage self-relation exposes parent/child; a root has parentTokenId=null.
+Both new FKs use ON DELETE RESTRICT / ON UPDATE CASCADE. A referenced family or
+parent cannot be deleted implicitly. Unique nullable parentTokenId allows at most
+one direct child per non-null parent and multiple NULL roots across or within
+families. It does not enforce same-family ancestry, acyclicity or exactly one root;
+future issuance/atomic rotation must enforce runtime invariants. There is no
+redundant replaced_by_token_id or new lifecycle CHECK constraint.
+
+Besides the UUID primary key, add unique indexes on token_hash and parent_token_id,
+plus nonunique (family_id,status) and (family_id,issued_at) indexes for future family
+status lookup and history inspection. No user/client/session indexes are needed
+on the token. No hash encoding/length policy is imposed; M8.3 defines the persisted
+SHA-256 representation later. M8.2 neither computes a hash nor generates a token.
+Future issuance calculates expiresAt from Client.refreshTokenTtl; neither the
+existing client TTL nor family schema gains expiry/TTL fields here.
+
+The additive migration only creates this enum/table/indexes/FKs, without backfill,
+seed rows or changes to existing family/user/client/session data and FK policies.
+The explicit local refresh-token:check verifies exact schema/generated enum/model,
+defaults, family/lineage relations, unique hashes/one child, multiple NULL roots
+and FK/delete restrictions inside a rollback transaction. Ten-table fingerprints
+include refresh_tokens; seed:check proves both seed runs preserve both refresh
+tables. Fixed probe messages never print hashes, identifiers or private errors.
+
+This is persistence only: no service, generator/hasher, issuance, consumption,
+rotation, reuse detection, revocation, Redis state or HTTP change. OAuth-only
+success remains exactly four fields, OIDC exactly five, never refresh_token;
+Discovery still advertises only authorization_code. M8.3+ remains future work.
+
+### Future refresh-token generation/issuance policy (M8.3+)
 
 Format:
 
@@ -1181,16 +1239,13 @@ Persistence:
 SHA-256(raw_refresh_token)
 ```
 
-Store metadata:
+Normalized token metadata (the M8.2 persisted layout above):
 
 ```text
 id
 family_id
 token_hash
 parent_token_id
-client_id
-user_id
-session_id
 status
 issued_at
 expires_at
