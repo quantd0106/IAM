@@ -1,12 +1,15 @@
 import { Controller, Get, Inject, Post, Req, Res } from '@nestjs/common';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
+import { UserInfoClaimsService } from './userinfo-claims.service.js';
 
 @Controller('oidc')
 export class UserInfoController {
   constructor(
     @Inject(UserInfoAccessTokenService)
     private readonly tokens: UserInfoAccessTokenService,
+    @Inject(UserInfoClaimsService)
+    private readonly claims: UserInfoClaimsService,
   ) {}
 
   @Get('userinfo')
@@ -41,7 +44,12 @@ export class UserInfoController {
         authorization.length <= 1 ? authorization[0] : authorization,
       );
       if (result.ok) {
-        this.send(response, 200, { sub: result.subject });
+        const resolved = await this.claims.resolve({
+          subject: result.subject,
+          scopes: result.scopes,
+        });
+        if (resolved.ok) this.send(response, 200, resolved.claims);
+        else this.invalidToken(response);
       } else if (result.error === 'missing_credentials') {
         this.send(response, 401, undefined, 'Bearer realm="userinfo"');
       } else if (result.error === 'insufficient_scope') {
@@ -56,15 +64,7 @@ export class UserInfoController {
           'Bearer realm="userinfo", error="insufficient_scope", scope="openid"',
         );
       } else {
-        this.send(
-          response,
-          401,
-          {
-            error: 'invalid_token',
-            error_description: 'Invalid access token.',
-          },
-          'Bearer realm="userinfo", error="invalid_token"',
-        );
+        this.invalidToken(response);
       }
     } catch {
       this.send(response, 500, {
@@ -72,6 +72,18 @@ export class UserInfoController {
         error_description: 'UserInfo request failed.',
       });
     }
+  }
+
+  private invalidToken(response: ServerResponse): void {
+    this.send(
+      response,
+      401,
+      {
+        error: 'invalid_token',
+        error_description: 'Invalid access token.',
+      },
+      'Bearer realm="userinfo", error="invalid_token"',
+    );
   }
 
   private send(

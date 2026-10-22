@@ -28,6 +28,9 @@ import { IdTokenClaimsService } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
 import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
 import { UserInfoController } from './userinfo.controller.js';
+import { UserInfoClaimsService } from './userinfo-claims.service.js';
+import { PrismaModule } from '../prisma/prisma.module.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 
 describe('public GET /.well-known/jwks.json', () => {
   let app: INestApplication<Server>;
@@ -46,6 +49,8 @@ describe('public GET /.well-known/jwks.json', () => {
   });
   beforeAll(async () => {
     const module = await Test.createTestingModule({ imports: [OidcModule] })
+      .overrideProvider(PrismaService)
+      .useValue({})
       .overrideProvider(SigningKeyService)
       .useValue({
         getPublicJwk,
@@ -90,10 +95,11 @@ describe('public GET /.well-known/jwks.json', () => {
     await app.close();
   });
 
-  it('wires only Config and signing capabilities in the existing non-global OIDC module', () => {
+  it('keeps OIDC internal with only Config, signing and UserInfo Prisma capabilities', () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
+      PrismaModule,
     ]);
     expect(Reflect.getMetadata('providers', OidcModule) as unknown).toEqual([
       DiscoveryService,
@@ -101,6 +107,7 @@ describe('public GET /.well-known/jwks.json', () => {
       IdTokenClaimsService,
       IdTokenIssuerService,
       UserInfoAccessTokenService,
+      UserInfoClaimsService,
     ]);
     expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toEqual([
       DiscoveryController,

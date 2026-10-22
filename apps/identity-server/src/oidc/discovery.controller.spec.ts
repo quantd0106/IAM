@@ -17,6 +17,7 @@ import {
 import type { Environment } from '../config/env.schema.js';
 import { OidcModule } from './oidc.module.js';
 import { DiscoveryService } from './discovery.service.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 
 describe('GET /.well-known/openid-configuration', () => {
   let app: INestApplication<Server>;
@@ -50,6 +51,8 @@ describe('GET /.well-known/openid-configuration', () => {
     const module = await Test.createTestingModule({ imports: [OidcModule] })
       .overrideProvider(ConfigService)
       .useValue(config)
+      .overrideProvider(PrismaService)
+      .useValue({})
       .compile();
     app = module.createNestApplication<INestApplication<Server>>({
       logger: false,

@@ -790,7 +790,7 @@ Acceptance criteria:
 
 ## M7.5 — OIDC scopes/profile mapping
 
-Status: [ ]
+Status: [x]
 
 Scopes:
 

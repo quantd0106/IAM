@@ -197,6 +197,7 @@ describe('UserInfoAccessTokenService stateless canonical access-token boundary',
       expect(await service.authenticate('Bearer ' + token)).toEqual({
         ok: true,
         subject,
+        scopes,
       });
       expect(get).toHaveBeenCalledExactlyOnceWith('ISSUER_URL', {
         infer: true,
@@ -228,10 +229,24 @@ describe('UserInfoAccessTokenService stateless canonical access-token boundary',
       expect(await service.authenticate(prefix + token)).toEqual({
         ok: true,
         subject,
+        scopes: ['openid'],
       });
       expect(vi.mocked(jose.jwtVerify).mock.calls[0][0] === token).toBe(true);
     },
   );
+  it('returns fresh verified scope arrays preserving order/duplicates without exposing other claims', async () => {
+    const scopes = ['email', 'openid', 'profile', 'openid'];
+    const token = await accessToken(scopes);
+    const first = await service.authenticate('Bearer ' + token);
+    const second = await service.authenticate('Bearer ' + token);
+    expect(first).toEqual({ ok: true, subject, scopes });
+    expect(second).toEqual(first);
+    if (!first.ok || !second.ok) throw new Error('Expected verified grants.');
+    expect(first.scopes).not.toBe(second.scopes);
+    first.scopes.push('injected');
+    expect(second.scopes).toEqual(scopes);
+    expect(scopes).toEqual(['email', 'openid', 'profile', 'openid']);
+  });
   it('distinguishes missing credentials before any key/config access', async () => {
     const get = vi.spyOn(config, 'getOrThrow');
     expect(await service.authenticate(undefined)).toEqual({
@@ -422,7 +437,7 @@ describe('UserInfoAccessTokenService stateless canonical access-token boundary',
             jku: 'https://private-native-canary.invalid/jwks',
           })),
       ),
-    ).toEqual({ ok: true, subject });
+    ).toEqual({ ok: true, subject, scopes: ['openid'] });
   });
   it.each(['config', 'config-shape', 'public-key', 'kid', 'unexpected-verify'])(
     'treats %s operational failure as sanitized internal error, never invalid credentials',

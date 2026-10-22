@@ -36,6 +36,9 @@ import {
 } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
 import { OidcModule } from './oidc.module.js';
+import { UserInfoClaimsService } from './userinfo-claims.service.js';
+import { PrismaModule } from '../prisma/prisma.module.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
 import { UserInfoController } from './userinfo.controller.js';
 
@@ -314,6 +317,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
+      PrismaModule,
     ]);
     expect(Reflect.getMetadata('providers', OidcModule) as unknown).toEqual([
       DiscoveryService,
@@ -321,6 +325,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
       IdTokenClaimsService,
       IdTokenIssuerService,
       UserInfoAccessTokenService,
+      UserInfoClaimsService,
     ]);
     expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toEqual([
       DiscoveryController,
@@ -342,6 +347,8 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
       throw new Error('Unexpected eager key access.');
     });
     const module = await Test.createTestingModule({ imports: [OidcModule] })
+      .overrideProvider(PrismaService)
+      .useValue({})
       .overrideProvider(ConfigService)
       .useValue({ getOrThrow: get })
       .overrideProvider(SigningKeyService)

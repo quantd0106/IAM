@@ -25,10 +25,15 @@ import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
 import { UserInfoController } from './userinfo.controller.js';
 import { OidcModule } from './oidc.module.js';
 import type { Environment } from '../config/env.schema.js';
+import { PrismaModule } from '../prisma/prisma.module.js';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { UserInfoClaimsService } from './userinfo-claims.service.js';
 
 const subject = 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f';
 const issuerUrl = 'https://iam.example.test';
 const kid = 'MiXeD-e\u0301-Key';
+const username = ' MiXeD-e\u0301-username ';
+const email = 'MiXeD@Example.test';
 const invalidBody = {
   error: 'invalid_token',
   error_description: 'Invalid access token.',
@@ -45,12 +50,15 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
   let noOpenid: string;
   let idToken: string;
   let expired: string;
+  let missingProfile: string;
+  let missingOpenid: string;
   let publicKey: Awaited<ReturnType<typeof generateKeyPair>>['publicKey'];
   const config = new ConfigService<Environment, true>({
     ISSUER_URL: issuerUrl,
   });
   const getPublicVerificationKey = vi.fn();
   const getKeyId = vi.fn();
+  const findUnique = vi.fn();
   const forbidden = vi.fn(() => {
     throw new Error('Unexpected UserInfo private-key/JWKS access.');
   });
@@ -71,6 +79,8 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         [['openid', 'profile'], 'banking-api'],
         [['openid', 'email'], 'student-api'],
         [['openid', 'profile', 'email'], 'identity-server'],
+        [['openid', 'banking.transactions.read'], 'banking-api'],
+        [['openid', 'Profile', 'Email', 'myprofile', 'myemail'], 'student-api'],
       ].map(
         async ([scopes, audience]) =>
           (
@@ -95,6 +105,21 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         ttlSeconds: 600,
       })
     ).accessToken;
+    [missingProfile, missingOpenid] = await Promise.all(
+      [['openid', 'profile'], ['openid']].map(
+        async (scopes) =>
+          (
+            await issuer.issue({
+              subject: 'b7df50df-1558-440e-adc0-760cbdd8b240',
+              audience: 'student-api',
+              scopes,
+              roles: [],
+              permissions: [],
+              ttlSeconds: 600,
+            })
+          ).accessToken,
+      ),
+    );
     idToken = (
       await new IdTokenIssuerService(
         new IdTokenClaimsService(config),
@@ -124,6 +149,12 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     const module = await Test.createTestingModule({ imports: [OidcModule] })
       .overrideProvider(ConfigService)
       .useValue(config)
+      .overrideProvider(PrismaService)
+      .useValue({
+        user: { findUnique },
+        credential: { findMany: forbidden },
+        session: { findMany: forbidden },
+      })
       .overrideProvider(SigningKeyService)
       .useValue({
         getPublicVerificationKey,
@@ -143,6 +174,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     vi.clearAllMocks();
     getPublicVerificationKey.mockResolvedValue(publicKey);
     getKeyId.mockResolvedValue(kid);
+    findUnique.mockResolvedValue({ username, email });
     logs = [console, Logger, Logger.prototype].flatMap((target) =>
       ['log', 'info', 'error', 'warn', 'debug', 'verbose', 'fatal'].flatMap(
         (name) =>
@@ -159,6 +191,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
   afterEach(() => {
     try {
       expect(forbidden).not.toHaveBeenCalled();
+      expect(findUnique.mock.calls.length).toBeLessThanOrEqual(1);
       for (const log of logs) expect(log).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
@@ -174,10 +207,11 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     expect(response.headers.location).toBeUndefined();
   };
 
-  it('adds only the focused OIDC controller/provider without store modules/global scope/exports', () => {
+  it('adds only internal claims resolution and Prisma without Redis/global scope/exports', () => {
     expect(Reflect.getMetadata('imports', OidcModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
+      PrismaModule,
     ]);
     expect(
       (Reflect.getMetadata('exports', OidcModule) as unknown) ?? [],
@@ -188,13 +222,16 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     expect(Reflect.getMetadata('providers', OidcModule) as unknown).toContain(
       UserInfoAccessTokenService,
     );
+    expect(Reflect.getMetadata('providers', OidcModule) as unknown).toContain(
+      UserInfoClaimsService,
+    );
     expect(Reflect.getMetadata('controllers', OidcModule) as unknown).toContain(
       UserInfoController,
     );
   });
   describe.each(['get', 'post'] as const)('%s', (method) => {
-    it.each([0, 1, 2, 3])(
-      'accepts real M6.7 token %# and returns only sub even with profile/email/RBAC fields',
+    it.each([0, 1, 2, 3, 4, 5])(
+      'accepts real M6.7 token %# and returns only the exact scope-limited claims',
       async (index) => {
         const response = await request(app.getHttpServer())
           [method]('/oidc/userinfo')
@@ -203,10 +240,137 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         headers(response);
         expect(response.headers['content-type']).toMatch(/^application\/json/);
         expect(response.headers['www-authenticate']).toBeUndefined();
-        expect(response.body as unknown).toEqual({ sub: subject });
-        expect(Object.keys(response.body as object)).toEqual(['sub']);
+        const expected = [
+          { sub: subject },
+          { sub: subject, preferred_username: username },
+          { sub: subject, email },
+          { sub: subject, preferred_username: username, email },
+          { sub: subject },
+          { sub: subject },
+        ][index];
+        expect(response.body as unknown).toEqual(expected);
+        expect(Object.keys(response.body as object)).toEqual(
+          Object.keys(expected),
+        );
+        if ([1, 2, 3].includes(index)) {
+          expect(findUnique).toHaveBeenCalledExactlyOnceWith({
+            where: { id: subject },
+            select: { username: true, email: true },
+          });
+          expect(getKeyId.mock.invocationCallOrder[0]).toBeLessThan(
+            findUnique.mock.invocationCallOrder[0],
+          );
+        } else expect(findUnique).not.toHaveBeenCalled();
       },
     );
+    it('queries only after authentication has completely resolved with verified grants', async () => {
+      const authentication = app.get(UserInfoAccessTokenService);
+      const original = authentication.authenticate.bind(authentication);
+      let verified = false;
+      vi.spyOn(authentication, 'authenticate').mockImplementation(
+        async (header) => {
+          const result = await original(header);
+          expect(result).toEqual({
+            ok: true,
+            subject,
+            scopes: ['openid', 'profile', 'email'],
+          });
+          verified = result.ok;
+          return result;
+        },
+      );
+      findUnique.mockImplementationOnce(() => {
+        expect(verified).toBe(true);
+        return Promise.resolve({ username, email });
+      });
+      await request(app.getHttpServer())
+        [method]('/oidc/userinfo')
+        .set('Authorization', 'Bearer ' + tokens[3])
+        .expect(200)
+        .expect({ sub: subject, preferred_username: username, email });
+    });
+    it('maps a missing requested-claim user to the same fixed invalid_token and keeps openid-only stateless', async () => {
+      findUnique.mockResolvedValue(null);
+      const response = await request(app.getHttpServer())
+        [method]('/oidc/userinfo')
+        .set('Authorization', 'Bearer ' + missingProfile)
+        .expect(401);
+      headers(response);
+      expect(response.body as unknown).toEqual(invalidBody);
+      expect(response.headers['www-authenticate']).toBe(
+        'Bearer realm="userinfo", error="invalid_token"',
+      );
+      expect(findUnique).toHaveBeenCalledExactlyOnceWith({
+        where: { id: 'b7df50df-1558-440e-adc0-760cbdd8b240' },
+        select: { username: true, email: true },
+      });
+      findUnique.mockClear();
+      const stateless = await request(app.getHttpServer())
+        [method]('/oidc/userinfo')
+        .set('Authorization', 'Bearer ' + missingOpenid)
+        .expect(200);
+      headers(stateless);
+      expect(stateless.body as unknown).toEqual({
+        sub: 'b7df50df-1558-440e-adc0-760cbdd8b240',
+      });
+      expect(findUnique).not.toHaveBeenCalled();
+    });
+    it.each(['database', 'username', 'email'])(
+      'sanitizes %s profile-resolution failure as server_error, not invalid_token',
+      async (kind) => {
+        if (kind === 'database')
+          findUnique.mockRejectedValue(
+            new Error('SQL-DATABASE_URL-subject-username-email-canary', {
+              cause: new Error('private'),
+            }),
+          );
+        else
+          findUnique.mockResolvedValue({
+            username,
+            email,
+            [kind]: kind === 'email' ? ' email-canary ' : '',
+          });
+        const response = await request(app.getHttpServer())
+          [method]('/oidc/userinfo')
+          .set('Authorization', 'Bearer ' + tokens[3])
+          .expect(500);
+        headers(response);
+        expect(response.body as unknown).toEqual({
+          error: 'server_error',
+          error_description: 'UserInfo request failed.',
+        });
+        expect(response.headers['www-authenticate']).toBeUndefined();
+        expect(response.text.includes('canary')).toBe(false);
+        expect(findUnique).toHaveBeenCalledExactlyOnceWith({
+          where: { id: subject },
+          select: { username: true, email: true },
+        });
+      },
+    );
+    it('does not inspect status or lock metadata and never spreads mocked row extras', async () => {
+      findUnique.mockResolvedValue({
+        username,
+        email,
+        status: 'DISABLED',
+        lockedUntil: new Date(9999999999999),
+        name: 'private',
+        email_verified: false,
+      });
+      const response = await request(app.getHttpServer())
+        [method]('/oidc/userinfo')
+        .set('Authorization', 'Bearer ' + tokens[3])
+        .expect(200);
+      headers(response);
+      expect(response.body as unknown).toEqual({
+        sub: subject,
+        preferred_username: username,
+        email,
+      });
+      expect(findUnique).toHaveBeenCalledExactlyOnceWith({
+        where: { id: subject },
+        select: { username: true, email: true },
+      });
+    });
     it('requires Authorization, never redirects to login or loads keys for missing credentials', async () => {
       const response = await request(app.getHttpServer())
         [method]('/oidc/userinfo')
@@ -218,6 +382,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
       expect(response.text).toBe('');
       expect(getPublicVerificationKey).not.toHaveBeenCalled();
       expect(getKeyId).not.toHaveBeenCalled();
+      expect(findUnique).not.toHaveBeenCalled();
     });
     it('does not authenticate using a session cookie or access_token query parameter', async () => {
       const response = await request(app.getHttpServer())
@@ -229,6 +394,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         'Bearer realm="userinfo"',
       );
       expect(getPublicVerificationKey).not.toHaveBeenCalled();
+      expect(findUnique).not.toHaveBeenCalled();
     });
     it.each([
       'basic',
@@ -257,6 +423,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
       expect(response.headers['www-authenticate']).toBe(
         'Bearer realm="userinfo", error="invalid_token"',
       );
+      expect(findUnique).not.toHaveBeenCalled();
     });
     it('rejects duplicate Authorization header lines instead of authenticating the first value', async () => {
       const response = await request(app.getHttpServer())
@@ -274,6 +441,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         .expect(403);
       headers(response);
       expect(response.body as unknown).toEqual(insufficientBody);
+      expect(findUnique).not.toHaveBeenCalled();
       expect(response.headers['www-authenticate']).toBe(
         'Bearer realm="userinfo", error="insufficient_scope", scope="openid"',
       );
@@ -281,17 +449,19 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
     it('ignores Host/Origin/forwarded headers, cookies and query claim/audience overrides', async () => {
       const response = await request(app.getHttpServer())
         [method](
-          '/oidc/userinfo?sub=caller&scope=profile&aud=caller&claims=email',
+          '/oidc/userinfo?sub=caller&scope=profile%20email&aud=caller&claims=email',
         )
         .set('Authorization', 'Bearer ' + tokens[0])
         .set('Host', 'caller.invalid')
         .set('Origin', 'https://caller.invalid')
         .set('X-Forwarded-Host', 'caller.invalid')
         .set('X-Forwarded-Proto', 'http')
+        .set('Scope', 'profile email')
         .set('Cookie', 'iam.sid=untrusted')
         .expect(200);
       headers(response);
       expect(response.body as unknown).toEqual({ sub: subject });
+      expect(findUnique).not.toHaveBeenCalled();
     });
     it.each(['config', 'key', 'kid', 'internal'])(
       'sanitizes %s operational failure as 500, not invalid_token',
@@ -321,6 +491,7 @@ describe('GET + POST /oidc/userinfo protected resource', () => {
         });
         expect(response.headers['www-authenticate']).toBeUndefined();
         expect(response.text.includes('canary')).toBe(false);
+        expect(findUnique).not.toHaveBeenCalled();
       },
     );
   });

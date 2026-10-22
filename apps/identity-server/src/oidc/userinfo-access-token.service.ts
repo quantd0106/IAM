@@ -7,7 +7,7 @@ import { authorizationRequestSchema } from '../oauth/authorization-request.schem
 import { SigningKeyService } from '../security/signing/signing-key.service.js';
 
 export type UserInfoAuthentication =
-  | { ok: true; subject: string }
+  | { ok: true; subject: string; scopes: string[] }
   | {
       ok: false;
       error: 'missing_credentials' | 'invalid_token' | 'insufficient_scope';
@@ -92,7 +92,11 @@ export class UserInfoAccessTokenService {
         return { ok: false, error: 'invalid_token' };
       if (!parsed.data.scope.includes('openid'))
         return { ok: false, error: 'insufficient_scope' };
-      return { ok: true, subject: parsed.data.sub };
+      return {
+        ok: true,
+        subject: parsed.data.sub,
+        scopes: [...parsed.data.scope],
+      };
     } catch {
       throw new Error('UserInfo access-token validation failed.');
     }

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { PrismaModule } from '../prisma/prisma.module.js';
 import { SigningKeyModule } from '../security/signing/signing-key.module.js';
 import { DiscoveryController } from './discovery.controller.js';
 import { DiscoveryService } from './discovery.service.js';
@@ -9,9 +10,10 @@ import { IdTokenClaimsService } from './id-token-claims.service.js';
 import { IdTokenIssuerService } from './id-token-issuer.service.js';
 import { UserInfoAccessTokenService } from './userinfo-access-token.service.js';
 import { UserInfoController } from './userinfo.controller.js';
+import { UserInfoClaimsService } from './userinfo-claims.service.js';
 
 @Module({
-  imports: [ConfigModule, SigningKeyModule],
+  imports: [ConfigModule, SigningKeyModule, PrismaModule],
   controllers: [DiscoveryController, JwksController, UserInfoController],
   providers: [
     DiscoveryService,
@@ -19,6 +21,7 @@ import { UserInfoController } from './userinfo.controller.js';
     IdTokenClaimsService,
     IdTokenIssuerService,
     UserInfoAccessTokenService,
+    UserInfoClaimsService,
   ],
 })
 export class OidcModule {}

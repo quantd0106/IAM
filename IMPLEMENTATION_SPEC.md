@@ -252,7 +252,7 @@ registration, revocation, request objects, encryption, logout or other capabilit
 The advertised jwks_uri is live in M7.2 below; userinfo_endpoint is live in M7.4
 as a Bearer-protected resource (401 without credentials). Advertising RS256 does not integrate ID Tokens into
 HTTP token responses; the internal M7.3 capability is described in section 10.
-Scope/profile mapping and full OIDC E2E remain later work.
+M7.5 supplies scope-limited UserInfo mapping below; full OIDC integration/E2E remains M7.6.
 Discovery works without provisioned key files. Explicit discovery:check fetches
 the live metadata and verifies the exact allowlist/staged routes without store
 clients, login or direct key-file reads. Its JWKS HTTP assertion now requires the
@@ -287,8 +287,8 @@ Successful JWKS responses use exactly Cache-Control: public, max-age=300, an MVP
 300-second public verification-metadata cache choice. No Set-Cookie, Location or
 WWW-Authenticate; no ETag, Last-Modified or conditional-GET behavior is added.
 There is no rotation, multiple-key publication, auto-generation or reload.
-Discovery keeps no-store and its unchanged metadata. M7.4 adds sub-only UserInfo
-below. ID Token HTTP integration, profile mapping and full OIDC E2E remain later
+Discovery keeps no-store and its unchanged metadata. M7.4 adds protected UserInfo,
+extended by M7.5 below. ID Token HTTP integration and full OIDC E2E remain M7.6
 work; M7.3 is internal only.
 
 Explicit jwks:check performs only HTTP reads and JOSE public-JWK import against
@@ -296,13 +296,14 @@ the existing local stack/signing pair; it never generates keys, opens store
 clients or prints key material. Crypto regression verifies a real M6.7 access
 token against the M7.2 public JWK, including identical kid values.
 
-### M7.4 sub-only UserInfo protected resource
+### M7.4 UserInfo protected-resource authentication
 
 GET and POST /oidc/userinfo share identical authentication and response semantics.
-The existing non-global OidcModule adds only UserInfoController and
-UserInfoAccessTokenService, using its existing ConfigModule/SigningKeyModule.
-There is no Prisma/Redis/OAuth/Tokens module import, User lookup, current-user
-status check, session touch, introspection, denylist, revocation or store write.
+M7.4 added UserInfoController and UserInfoAccessTokenService using the existing
+ConfigModule/SigningKeyModule. M7.5 adds only PrismaModule and the internal
+UserInfoClaimsService for optional read-only profile resolution below. There is
+no Redis/OAuth/Tokens module import, current-user status check, session touch,
+introspection, denylist, revocation or store write.
 Tokens remain stateless until expiry. Startup, health and Discovery stay lazy;
 only explicit credential validation requests the signing-key capability.
 
@@ -338,9 +339,8 @@ Business resource APIs must still check their own expected audience. A future
 multi-audience/resource-indicator design may tighten UserInfo separately.
 
 Require tokenized, case-sensitive openid, never a substring/alias/default. A valid
-request returns HTTP 200 application/json with exactly {sub: verifiedToken.sub},
-even for openid profile email. Do not return any other token or user claim.
-Profile/email lookup/mapping remains M7.5; no schema/profile columns are added.
+request returns HTTP 200 application/json with sub from verifiedToken.sub and
+only the M7.5 scope-limited claims below. No schema/profile columns are added.
 
 All UserInfo responses set Cache-Control: no-store and Pragma: no-cache, without
 Set-Cookie or Location. Missing Authorization returns empty 401 with
@@ -360,11 +360,58 @@ Never log headers, compact JWTs, token claims or key/config material.
 
 Explicit userinfo:check uses the existing M6.7 issuer and configured signing pair
 to create request-local test tokens, then checks GET/POST success, missing auth,
-insufficient_scope and real M7.3 ID Token rejection. It adds no users/store clients,
-does not generate/rotate keys and is not full OIDC E2E. Discovery:check now checks
+insufficient_scope and real M7.3 ID Token rejection. M7.5 adds one uniquely owned
+temporary User fixture with finally cleanup and removal verification; no credentials,
+sessions, registry or Redis mutations. It does not generate/rotate keys and is not
+full OIDC E2E. Discovery:check checks
 the advertised UserInfo URL for 401 + Bearer challenge; metadata remains unchanged.
 POST /oauth/token still returns only its four access-token fields, without
 id_token/refresh_token. M7.3 remains internal; integration belongs to M7.6.
+
+### M7.5 scope-limited UserInfo claims
+
+After complete M7.4 authentication, return internal subject plus a defensive copy
+of the canonical parsed access-token scopes, preserving order/duplicates. Only
+these verified grants authorize disclosure; query/body/cookies/other headers,
+registry scope allowances and database values never supply grants.
+
+UserInfoController delegates to internal UserInfoClaimsService.resolve({subject,
+scopes}). Always return sub. Exact case-sensitive profile adds only
+preferred_username = User.username; exact email adds only email = User.email.
+Ignore application/unknown scopes, aliases and substrings. Construct a fresh
+explicit allowlisted response: only sub, preferred_username and email can appear.
+Never spread a User row, JWT, request or arbitrary input. Preserve persisted values
+exactly, without trimming, casefolding, normalization or repair.
+
+Without profile/email (including openid-only or openid + banking.transactions.read),
+return {sub} without querying User, even for a subject with no current row. When
+either scope is granted, perform at most one Prisma User.findUnique query with
+where: {id: verifiedSubject}, select: {username: true, email: true}. No relations,
+Credential/Session, metadata, status or lockedUntil are selected. Use the existing
+PrismaModule/PrismaService; no schema/migration, Redis dependency, store writes,
+current-account revocation or session policy is introduced. Tokens remain stateless
+until expiry; this lookup obtains requested claim values only.
+
+A missing requested-claim User row has a distinct internal invalid_token result,
+mapped to exactly M7.4's fixed 401 body/challenge, never "User not found". Unexpected
+database failure or malformed selected data is an operational failure, mapped to
+the existing fixed 500 server_error / UserInfo request failed., with no challenge,
+native cause, SQL, identifiers, PII or sensitive logs. Validate selected username as
+a nonempty string and email with the same z.email() expectation used after trimming
+at registration; here do not trim or repair either persisted value.
+
+The supported subset is intentionally limited by the current User schema. Omit
+all unavailable standard profile claims (including name, given_name, family_name,
+nickname, profile, picture, website, gender, birthdate, zoneinfo, locale and
+updated_at), not null placeholders. Omit email_verified entirely: verification
+state is not modeled, so neither true nor false is justified. No email-verification
+workflow or new column is added.
+
+Discovery's exact metadata/scopes remain unchanged, without claims_supported.
+The internal M7.3 ID Token remains exactly iss/sub/aud/iat/exp/nonce; profile/email
+are supplied only through UserInfo. POST /oauth/token still returns exactly four
+M6.7 access-token fields, no id_token or refresh_token. M7.6 owns final OIDC
+token-response integration and E2E, not M7.5.
 
 ---
 

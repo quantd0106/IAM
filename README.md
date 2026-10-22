@@ -949,7 +949,7 @@ Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec 
 
 JWKS URL đã live trong M7.2 (mục 34); UserInfo hiện yêu cầu Bearer token (mục 36),
 không credentials trả 401 kèm challenge.
-Chưa phát ID Token qua HTTP, map profile/email claims hoặc hoàn tất OIDC E2E. M6.8 vẫn kiểm tra
+Chưa phát ID Token qua HTTP hoặc hoàn tất OIDC E2E; UserInfo đã map profile/email theo scope (mục 36). M6.8 vẫn kiểm tra
 OAuth pipeline cũ, chỉ cập nhật expectation Discovery/JWKS từ 404 sang 200.
 
 ```bash
@@ -1003,17 +1003,37 @@ Lỗi chỉ fixed sanitized message, không native cause hoặc token/key/nonce 
 Chi tiết canonical nằm ở implementation spec mục 10.
 
 `POST /oauth/token` vẫn chỉ trả bốn access-token fields, không id_token kể cả
-grant openid. M7.6 mới tích hợp ID Token vào HTTP response; UserInfo sub-only có ở
-mục 36, profile mapping vẫn thuộc M7.5. Không refresh token hoặc OIDC E2E mới.
+grant openid. M7.6 mới tích hợp ID Token vào HTTP response; UserInfo scope-limited có ở
+mục 36. Không refresh token hoặc OIDC E2E mới.
 
-## 36. Bearer-protected UserInfo (M7.4)
+## 36. Bearer-protected, scope-limited UserInfo (M7.4–M7.5)
 
 `GET` và `POST /oidc/userinfo` chỉ nhận access token qua Authorization Bearer header
 (scheme không phân biệt case, token giữ nguyên); không dùng cookie, Basic,
 query hoặc POST body. Validate bằng JOSE RS256, exact issuer/kid, expiry và đúng
 tám canonical access-token claims; ID Token không được dùng thay access token.
-Scope phải chứa exact token `openid`. Thành công trả đúng `{sub}`, kể cả có thêm
-profile/email scopes; chưa lookup User, trả profile/email hay thêm DB columns.
+Scope phải chứa exact token `openid`. Chỉ các scopes trong access token đã verify
+mới cho phép trả claims, với exact case-sensitive matching:
+
+| Granted scopes | Response chính xác |
+| --- | --- |
+| openid | `{sub}` |
+| openid profile | `{sub, preferred_username: User.username}` |
+| openid email | `{sub, email: User.email}` |
+| openid profile email | `{sub, preferred_username: User.username, email: User.email}` |
+
+`sub` luôn có. `Profile`/`Email`, substring và application scopes không cấp thêm
+claims. Không có profile/email thì không query User, kể cả subject không còn row.
+Khi cần một hoặc cả hai claims, query đúng verified subject một lần, chỉ select
+username/email; không Credential/Session, status/lockedUntil hoặc Redis. Giữ nguyên
+persisted values; validate username nonempty và email theo registration expectation
+nhưng không trim/repair. Không thêm schema/columns hay account-status revocation.
+
+User row thiếu khi cần profile/email -> cùng fixed 401 invalid_token; DB lỗi hoặc
+selected data hỏng -> safe 500 server_error. Không lộ subject existence hoặc PII.
+Không trả raw username, roles/permissions, metadata hay unsupported profile claims
+như name/given_name/family_name. `email_verified` bị bỏ hoàn toàn vì schema chưa
+model verification state; unknown không đồng nghĩa false, cũng không được giả true.
 
 Audience là quyết định MVP rõ ràng: kiểm tra `aud` nonempty scalar nhưng không
 ép audience riêng cho UserInfo, vì M6.7 đang cấp một business resource audience.
@@ -1025,15 +1045,19 @@ Không credentials -> empty 401 + `Bearer realm="userinfo"`; token sai -> fixed
 401 invalid_token; token hợp lệ thiếu openid -> fixed 403 insufficient_scope với
 challenge scope="openid". Lỗi key/config/internal -> safe 500, không bị hiểu thành
 token sai. Mọi response no-store/no-cache, không cookie/redirect hoặc sensitive logs.
-Chỉ dùng public verification/key-ID capability hiện có, không tự fetch JWKS,
-thêm key cache, DB/Redis/session dependency hoặc kiểm tra current User status.
+Xác thực chỉ dùng public verification/key-ID capability hiện có, không tự fetch JWKS
+hay thêm key cache. Mapping chỉ thêm optional read-only Prisma lookup, không
+Redis/session dependency hoặc kiểm tra current User status.
 Startup/health/Discovery không eager-load keys.
 
 ```bash
 pnpm --filter identity-server userinfo:check
 ```
 
-Probe dùng production issuer nội bộ và signing pair có sẵn để kiểm tra GET/POST,
-200/401/403 và ID Token confusion; không tạo user/DB rows, generate keys hoặc in JWT.
+Probe dùng issuer nội bộ và signing pair có sẵn để kiểm tra GET/POST, cả bốn claim
+combinations, scope isolation, 200/401/403 và ID Token confusion. Tạo đúng một User
+fixture unique, không credentials/sessions; finally xóa đúng fixture sở hữu và query
+xác nhận đã xóa. Không mutate registry/Redis, generate keys hoặc in PII/JWT.
 `discovery:check` hiện yêu cầu UserInfo 401 + Bearer challenge; GET token vẫn 404.
-Không thay token response, phát id_token/refresh_token hoặc implement M7.5/M7.6.
+Discovery metadata/JWKS giữ nguyên; ID Token vẫn đúng sáu claims, không profile/email.
+Không thay token response, phát id_token/refresh_token hoặc implement M7.6+.
