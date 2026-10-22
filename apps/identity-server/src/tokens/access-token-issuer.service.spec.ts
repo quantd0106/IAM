@@ -20,6 +20,7 @@ import {
 } from './access-token-claims.service.js';
 import { AccessTokenIssuerService } from './access-token-issuer.service.js';
 import { TokensModule } from './tokens.module.js';
+import { RefreshTokenGeneratorService } from './refresh-token-generator.service.js';
 
 const input: AccessTokenClaimsInput = {
   subject: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
@@ -173,10 +174,12 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
     expect(Reflect.getMetadata('providers', TokensModule) as unknown).toEqual([
       AccessTokenClaimsService,
       AccessTokenIssuerService,
+      RefreshTokenGeneratorService,
     ]);
     expect(Reflect.getMetadata('exports', TokensModule) as unknown).toEqual([
       AccessTokenClaimsService,
       AccessTokenIssuerService,
+      RefreshTokenGeneratorService,
     ]);
     expect(
       (Reflect.getMetadata('controllers', TokensModule) as unknown) ?? [],
@@ -184,6 +187,11 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
     expect(
       Reflect.getMetadata('__module:global__', TokensModule) as unknown,
     ).not.toBe(true);
+    const generate = vi.spyOn(
+      RefreshTokenGeneratorService.prototype,
+      'generate',
+    );
+    const hash = vi.spyOn(RefreshTokenGeneratorService.prototype, 'hash');
     const module = await Test.createTestingModule({ imports: [TokensModule] })
       .overrideProvider(ConfigService)
       .useValue(new ConfigService({}))
@@ -197,6 +205,11 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
       );
       expect(getPrivateSigningKey).not.toHaveBeenCalled();
       expect(getKeyId).not.toHaveBeenCalled();
+      expect(module.get(RefreshTokenGeneratorService)).toBeInstanceOf(
+        RefreshTokenGeneratorService,
+      );
+      expect(generate).not.toHaveBeenCalled();
+      expect(hash).not.toHaveBeenCalled();
     } finally {
       await module.close();
     }

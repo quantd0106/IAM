@@ -1149,7 +1149,8 @@ issuedAt, expiresAt, consumedAt, revokedAt. Ownership user/client/session chỉ 
 trên family đã thiết lập ở M8.1, không lặp lại trên token. Enum token chỉ có
 ACTIVE/CONSUMED/REVOKED; expiry là timestamp, không phải status riêng.
 
-tokenHash là required unique text, chưa chốt encoding/độ dài hoặc tính SHA-256.
+M8.2 chỉ định tokenHash required unique text, không có DB encoding/length constraint;
+M8.3 bên dưới chốt format sinh/hash ở service boundary.
 parentTokenId nullable unique tạo self-relation parent/child: nhiều roots NULL
 hợp lệ, mỗi parent có tối đa một child. Hai FK family/parent đều DELETE RESTRICT /
 UPDATE CASCADE. Indexes familyId + status và familyId + issuedAt phục vụ lookup/history.
@@ -1168,7 +1169,24 @@ Token probe dùng fixtures PostgreSQL local trong transaction luôn rollback, ki
 exact schema/defaults, no raw-token columns, lineage RT1 -> RT2 -> RT3, unique hash /
 one child, nhiều NULL roots, FK và delete restrictions; fingerprint mười bảng phải
 giữ nguyên. Fixture tokenHash chỉ là text kiểm persistence, không phải token thật.
-Seed runner không đổi, không seed family/token. Chưa có generator/hasher, issuance,
-rotation, reuse/revocation hoặc refresh HTTP behavior. `/oauth/token` vẫn đúng bốn
+Seed runner không đổi, không seed family/token. M8.2 không tự generate/hash;
+M8.3 thêm capability bên dưới, chưa có issuance, rotation, reuse/revocation hoặc
+refresh HTTP behavior. `/oauth/token` vẫn đúng bốn
 fields OAuth hoặc năm fields OIDC, không refresh_token; Discovery vẫn chỉ advertise
-authorization_code. M8.3+ chưa triển khai.
+authorization_code. M8.4+ chưa triển khai.
+
+## 40. Internal opaque refresh-token material (M8.3)
+
+`RefreshTokenGeneratorService` được provide/export qua TokensModule hiện có, không
+thêm module dependency. API `generate()` trả object mới `{rawToken, tokenHash}`;
+`hash(rawToken: string)` dùng chung cho future lookup. Raw token dùng đúng 32 bytes
+CSPRNG `randomBytes(32)`, base64url unpadded dài 43 ký tự (256 bits). Hash là SHA-256
+của exact UTF-8 raw string, lowercase hex 64 ký tự, không trim/decode/normalize.
+Chi tiết canonical/error policy nằm ở implementation spec mục 11.
+
+Service stateless, không config/DB/Redis/signing/I/O, không giữ/log credential,
+không tạo family/token rows, tính expiry hoặc collision lookup/retry. Không đổi
+schema/migration, AuthorizationCodeService hay PasswordService. Unit tests kiểm tra
+format, 256 mẫu distinct, abc known vector, opaque inputs và sanitized crypto faults;
+không cần check command trùng lặp. M8.4 mới nối persistence/initial issuance.
+`/oauth/token` và Discovery vẫn không có refresh_token response/grant.

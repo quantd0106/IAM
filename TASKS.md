@@ -841,7 +841,7 @@ Acceptance criteria:
 
 ## M8.3 — Opaque refresh-token generator
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

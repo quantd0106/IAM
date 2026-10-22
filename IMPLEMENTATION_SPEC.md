@@ -1195,8 +1195,9 @@ redundant replaced_by_token_id or new lifecycle CHECK constraint.
 Besides the UUID primary key, add unique indexes on token_hash and parent_token_id,
 plus nonunique (family_id,status) and (family_id,issued_at) indexes for future family
 status lookup and history inspection. No user/client/session indexes are needed
-on the token. No hash encoding/length policy is imposed; M8.3 defines the persisted
-SHA-256 representation later. M8.2 neither computes a hash nor generates a token.
+on the token. The M8.2 database imposes no hash encoding/length constraint; M8.3
+below defines the produced SHA-256 representation. M8.2 itself neither computes
+a hash nor generates a token.
 Future issuance calculates expiresAt from Client.refreshTokenTtl; neither the
 existing client TTL nor family schema gains expiry/TTL fields here.
 
@@ -1211,21 +1212,55 @@ tables. Fixed probe messages never print hashes, identifiers or private errors.
 This is persistence only: no service, generator/hasher, issuance, consumption,
 rotation, reuse detection, revocation, Redis state or HTTP change. OAuth-only
 success remains exactly four fields, OIDC exactly five, never refresh_token;
-Discovery still advertises only authorization_code. M8.3+ remains future work.
+Discovery still advertises only authorization_code. M8.3 below adds material-only
+generation/hashing; M8.4+ persistence/issuance remains future work.
 
-### Future refresh-token generation/issuance policy (M8.3+)
+### M8.3 opaque refresh-token material capability
 
-Format:
+Existing non-global TokensModule provides and exports RefreshTokenGeneratorService
+alongside the unchanged access-token providers. No new module imports, controller
+or startup hook is added. The service has no constructor dependencies or state;
+construction/module initialization never generates or hashes a credential.
 
-```text
-opaque token
-```
+generate(): GeneratedRefreshToken returns a fresh {rawToken, tokenHash} object:
+call Node node:crypto randomBytes(32) exactly once (32 CSPRNG bytes, 256 bits),
+encode with toString('base64url'), unpadded. The opaque credential is exactly 43
+characters from A-Z/a-z/0-9/_/-, matching ^[A-Za-z0-9_-]{43}$, with no =, + or /.
+Validate the byte count, exact output shape and canonical encoding/32 decoded
+bytes without repairing malformed output. This is not a UUID, JWT, signed/encrypted
+structure or identifier-derived value; it contains no embedded token metadata.
 
-Entropy:
+hash(rawToken: string): string requires a nonempty runtime scalar string and hashes
+the exact UTF-8 supplied string using createHash('sha256').update(rawToken, 'utf8')
+.digest('hex'). The canonical persistence representation is exactly 64 lowercase
+hexadecimal characters (^[0-9a-f]{64}$). No salt, HMAC, password hash, truncation,
+decoded-byte hashing, trim, casefold, URL/base64 decoding/re-encoding, padding repair
+or Unicode normalization. Nonempty opaque presented strings need not match the
+generator alphabet; future protocol-level rejection belongs to M8.5. generate()
+uses this same hash() transformation on its encoded raw string, not random bytes.
 
-```text
-256 bits
-```
+Malformed crypto output or internal generation failure throws only
+Refresh token generation failed.; invalid hash input, malformed digest or hashing
+failure throws only Refresh token hashing failed. No native cause, credential,
+digest or random bytes are attached/logged. Raw material is returned transiently
+only; there are no fields/caches/globals retaining it and no raw-token persistence.
+
+There is no ConfigService, Prisma/model/repository, Redis, signing-key, filesystem,
+network, status/expiry policy, collision query or retry. RefreshToken.tokenHash's
+existing unique index remains defense-in-depth; later M8.4 persistence owns any
+collision handling. Authorization-code crypto and PasswordService are unchanged.
+No family/token row or schema/migration is created by M8.3. Unit tests use real
+randomness for a 256-sample sanity check (not a collision-resistance proof), the
+public abc SHA-256 vector, opaque UTF-8 comparisons and focused crypto fault
+injection; assertions never print generated material. Static/module boundaries
+guard against persistence/I/O dependencies and eager generation.
+
+M8.3 generates material only. M8.4 will create family/token rows and return the
+initial refresh token; that integration is not implemented here. /oauth/token
+still returns exactly four OAuth fields or five OIDC fields, never refresh_token.
+Refresh grant, rotation/reuse/revocation, Discovery and M6/M7 remain unchanged.
+
+### Future refresh-token issuance policy (M8.4+)
 
 TTL:
 
@@ -1233,27 +1268,8 @@ TTL:
 30 days
 ```
 
-Persistence:
-
-```text
-SHA-256(raw_refresh_token)
-```
-
-Normalized token metadata (the M8.2 persisted layout above):
-
-```text
-id
-family_id
-token_hash
-parent_token_id
-status
-issued_at
-expires_at
-consumed_at
-revoked_at
-```
-
-Never persist raw refresh token.
+Future issuance uses the normalized M8.2 layout and M8.3 hash contract above.
+Never persist raw refresh token; no TTL/expiry calculation is introduced in M8.3.
 
 ---
 
