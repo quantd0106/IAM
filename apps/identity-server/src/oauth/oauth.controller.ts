@@ -35,6 +35,8 @@ import {
 import { AccessTokenIssuerService } from '../tokens/access-token-issuer.service.js';
 import { requireAccessTokenIssuance } from '../tokens/access-token-issuance.policy.js';
 import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
+import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
+import { requireRefreshTokenIssuance } from '../tokens/refresh-token-issuance.policy.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -52,6 +54,8 @@ export class OAuthController {
     private readonly tokens: AccessTokenIssuerService,
     @Inject(IdTokenIssuerService)
     private readonly idTokens: IdTokenIssuerService,
+    @Inject(RefreshTokenIssuerService)
+    private readonly refreshTokens: RefreshTokenIssuerService,
   ) {}
 
   @Post('token')
@@ -69,6 +73,7 @@ export class OAuthController {
     expires_in: number;
     scope: string;
     id_token?: string;
+    refresh_token: string;
   }> {
     let result: TokenRequestResult;
     try {
@@ -118,9 +123,11 @@ export class OAuthController {
     }
     let grant: AuthorizationCodeConsumeResult;
     let issuance: ReturnType<typeof requireAccessTokenIssuance>;
+    let refreshIssuance: ReturnType<typeof requireRefreshTokenIssuance>;
     let pkceValid = false;
     try {
       issuance = requireAccessTokenIssuance(authentication.client);
+      refreshIssuance = requireRefreshTokenIssuance(authentication.client);
       grant = await this.codes.consume({
         code: result.request.code,
         clientId: result.request.client_id,
@@ -160,18 +167,30 @@ export class OAuthController {
         expires_in: token.expiresIn,
         scope: token.scope,
       };
-      if (!grant.state.grantedScopes.includes('openid')) return tokenResponse;
-      if (grant.state.nonce === null)
-        throw new Error('Invalid OIDC grant invariant.');
-      const { idToken } = await this.idTokens.issue({
-        subject: grant.state.userId,
-        audience: grant.state.clientId,
-        nonce: grant.state.nonce,
-        ttlSeconds: issuance.ttlSeconds,
+      let idToken: string | undefined;
+      if (grant.state.grantedScopes.includes('openid')) {
+        if (grant.state.nonce === null)
+          throw new Error('Invalid OIDC grant invariant.');
+        ({ idToken } = await this.idTokens.issue({
+          subject: grant.state.userId,
+          audience: grant.state.clientId,
+          nonce: grant.state.nonce,
+          ttlSeconds: issuance.ttlSeconds,
+        }));
+      }
+      const { refreshToken } = await this.refreshTokens.issueInitial({
+        userId: grant.state.userId,
+        clientRecordId: authentication.client.id,
+        sessionId: grant.state.sessionId,
+        grantedScopes: grant.state.grantedScopes,
+        ttlSeconds: refreshIssuance.ttlSeconds,
       });
-      // Deliver one complete response only after both issuers succeed. Any failure
-      // above leaves the GETDEL-consumed code burned, never a partial token response.
-      return { ...tokenResponse, id_token: idToken };
+      // One complete response only after all issuers and refresh transaction commit.
+      return {
+        ...tokenResponse,
+        ...(idToken === undefined ? {} : { id_token: idToken }),
+        refresh_token: refreshToken,
+      };
     } catch {
       throw new HttpException(
         { error: 'server_error', error_description: 'Token request failed.' },

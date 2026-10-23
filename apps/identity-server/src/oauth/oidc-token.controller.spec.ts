@@ -21,6 +21,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { RedisService } from '../redis/redis.service.js';
 import { SigningKeyService } from '../security/signing/signing-key.service.js';
 import { AccessTokenIssuerService } from '../tokens/access-token-issuer.service.js';
+import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
 import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
 import { IdpSessionStateService } from '../session/idp-session-state.service.js';
 import { OAuthModule } from './oauth.module.js';
@@ -40,7 +41,14 @@ const serverError = {
   error: 'server_error',
   error_description: 'Token request failed.',
 };
-const oauthKeys = ['access_token', 'expires_in', 'scope', 'token_type'];
+const refreshToken = 'A'.repeat(43);
+const oauthKeys = [
+  'access_token',
+  'expires_in',
+  'refresh_token',
+  'scope',
+  'token_type',
+];
 
 describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE', () => {
   let app: INestApplication<Server>;
@@ -57,6 +65,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     enabled: boolean;
     accessTokenAudience: string | null;
     accessTokenTtl: number;
+    refreshTokenTtl: number;
     clientSecretHash: null;
     id: string;
   };
@@ -66,6 +75,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     throw new Error('Unexpected OIDC store/write/session operation.');
   });
   const findUnique = vi.fn();
+  const refresh = vi.fn<RefreshTokenIssuerService['issueInitial']>();
   const getAndDelete = vi.fn<RedisService['getAndDelete']>();
   const getPrivateSigningKey = vi.fn();
   const getKeyId = vi.fn();
@@ -83,6 +93,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     const state = authorizationCodeStateSchema.parse({
       clientId: body.client_id,
       userId: subject,
+      sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
       redirectUri: body.redirect_uri,
       grantedScopes: scopes,
       codeChallenge: challenge,
@@ -133,6 +144,8 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
         getPublicVerificationKey: forbidden,
         getPublicJwk: forbidden,
       })
+      .overrideProvider(RefreshTokenIssuerService)
+      .useValue({ issueInitial: refresh })
       .useMocker((token) =>
         token === ConfigService
           ? new ConfigService<Environment, true>({
@@ -169,6 +182,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       clientSecretHash: null,
       accessTokenAudience: 'student-api',
       accessTokenTtl: 123,
+      refreshTokenTtl: 456,
     };
     findUnique.mockImplementation(
       ({ where }: { where: { clientId: string } }) => {
@@ -186,6 +200,10 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     });
     getPrivateSigningKey.mockResolvedValue(privateKey);
     getKeyId.mockResolvedValue(kid);
+    refresh.mockImplementation(() => {
+      order.push('refresh');
+      return Promise.resolve({ refreshToken });
+    });
     access = vi
       .spyOn(app.get(AccessTokenIssuerService), 'issue')
       .mockImplementation(async (input) => {
@@ -251,9 +269,9 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     { scopes: ['OpenID'], nonce: nonceValue },
     { scopes: ['myopenid', 'openid.extra'], nonce: nonceValue },
   ])(
-    'preserves exact four-field OAuth-only response and never invokes ID issuer %#',
+    'returns exact five-field OAuth-only response and never invokes ID issuer %#',
     async ({ scopes, nonce }) => {
-      const { body, key } = fixture(scopes, nonce);
+      const { body, key, state } = fixture(scopes, nonce);
       const response = await post(
         body,
         200,
@@ -263,7 +281,18 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       expect(Object.keys(response.body as object).sort()).toEqual(oauthKeys);
       expect(id).not.toHaveBeenCalled();
       expect(access).toHaveBeenCalledOnce();
-      expect(order).toEqual(['client', 'consume', 'access']);
+      expect(order).toEqual(['client', 'consume', 'access', 'refresh']);
+      expect(refresh).toHaveBeenCalledExactlyOnceWith({
+        userId: state.userId,
+        clientRecordId: client.id,
+        sessionId: state.sessionId,
+        grantedScopes: scopes,
+        ttlSeconds: 456,
+      });
+      expect(
+        (response.body as Record<string, unknown>).refresh_token ===
+          refreshToken,
+      ).toBe(true);
       expect(entries.has(key)).toBe(false);
       const token = response.body as Record<string, string>;
       const { payload } = await jwtVerify(token.access_token, publicKey, {
@@ -282,7 +311,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       ['profile', 'openid', 'openid'],
     ].map((scopes) => ({ scopes })),
   )(
-    'issues exact five-field OIDC response from consumed grant %#',
+    'issues exact six-field OIDC response from consumed grant %#',
     async ({ scopes }) => {
       const { body, key } = fixture(scopes);
       const response = await post(
@@ -296,6 +325,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
         'access_token',
         'expires_in',
         'id_token',
+        'refresh_token',
         'scope',
         'token_type',
       ]);
@@ -350,7 +380,15 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
         nonce: nonceValue,
         ttlSeconds: 123,
       });
-      expect(order).toEqual(['client', 'consume', 'access', 'id']);
+      expect(order).toEqual(['client', 'consume', 'access', 'id', 'refresh']);
+      expect(tokens.refresh_token === refreshToken).toBe(true);
+      expect(refresh).toHaveBeenCalledExactlyOnceWith({
+        userId: subject,
+        clientRecordId: client.id,
+        sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
+        grantedScopes: scopes,
+        ttlSeconds: 456,
+      });
       expect(entries.has(key)).toBe(false);
     },
   );
@@ -360,6 +398,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     expect(first.body as unknown).toEqual(serverError);
     expect(access).toHaveBeenCalledOnce();
     expect(id).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
     expect(entries.has(key)).toBe(false);
     const retry = await post(body, 400);
     expect(retry.body as unknown).toEqual(invalidGrant);
@@ -383,6 +422,7 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       expect(first.text.includes('canary')).toBe(false);
       expect(access).toHaveBeenCalledOnce();
       expect(id).toHaveBeenCalledOnce();
+      expect(refresh).not.toHaveBeenCalled();
       expect(entries.has(key)).toBe(false);
       const attempt = access.mock.results[0];
       if (attempt.type !== 'return')
@@ -401,10 +441,18 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
     expect((await post(body, 500)).body as unknown).toEqual(serverError);
     expect(entries.has(key)).toBe(false);
     expect(id).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
     expect((await post(body, 400)).body as unknown).toEqual(invalidGrant);
     expect(id).not.toHaveBeenCalled();
   });
-  it.each(['shape', 'client', 'audience', 'ttl'])(
+  it.each([
+    'shape',
+    'client',
+    'audience',
+    'ttl',
+    'refresh-ttl',
+    'refresh-overflow',
+  ])(
     'does not burn code or invoke issuers on pre-GETDEL %s failure',
     async (stage) => {
       const { body, key } = fixture();
@@ -412,6 +460,9 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       let status = 500;
       if (stage === 'audience') client.accessTokenAudience = null;
       if (stage === 'ttl') client.accessTokenTtl = 0;
+      if (stage === 'refresh-ttl') client.refreshTokenTtl = 0;
+      if (stage === 'refresh-overflow')
+        client.refreshTokenTtl = Number.MAX_SAFE_INTEGER;
       if (stage === 'shape') status = 400;
       if (stage === 'client') status = 401;
       await post(
@@ -423,6 +474,12 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       expect(getAndDelete).not.toHaveBeenCalled();
       expect(access).not.toHaveBeenCalled();
       expect(id).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      if (stage.startsWith('refresh-')) {
+        client.refreshTokenTtl = 456;
+        await post(body, 200);
+        expect(entries.has(key)).toBe(false);
+      }
     },
   );
   it.each(['binding', 'pkce', 'expiry', 'replay'])(
@@ -445,6 +502,37 @@ describe('M7.6 POST /oauth/token conditional OIDC issuance after GETDEL + PKCE',
       expect(entries.has(key)).toBe(false);
       expect(access).not.toHaveBeenCalled();
       expect(id).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    },
+  );
+  it.each([['profile'], ['openid', 'profile']])(
+    'burns code on refresh persistence failure with no partial credential response %#',
+    async (...scopes: string[]) => {
+      const { body, key } = fixture(scopes);
+      refresh.mockRejectedValueOnce(
+        new Error('private-refresh-hash-DB-canary'),
+      );
+      const response = await post(body, 500);
+      expect(response.body as unknown).toEqual(serverError);
+      expect(response.text.includes('canary')).toBe(false);
+      expect(response.text.includes(refreshToken)).toBe(false);
+      expect(entries.has(key)).toBe(false);
+      expect(access).toHaveBeenCalledOnce();
+      expect(id).toHaveBeenCalledTimes(scopes.includes('openid') ? 1 : 0);
+      for (const attempt of [...access.mock.results, ...id.mock.results]) {
+        if (attempt.type === 'return') {
+          const generated = await attempt.value;
+          const credential =
+            'accessToken' in generated
+              ? generated.accessToken
+              : generated.idToken;
+          expect(response.text.includes(credential)).toBe(false);
+        }
+      }
+      expect(order.at(-1)).toBe(scopes.includes('openid') ? 'id' : 'access');
+      expect(refresh).toHaveBeenCalledOnce();
+      expect((await post(body, 400)).body as unknown).toEqual(invalidGrant);
+      expect(refresh).toHaveBeenCalledOnce();
     },
   );
 });

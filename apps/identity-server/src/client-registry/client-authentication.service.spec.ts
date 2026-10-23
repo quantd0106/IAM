@@ -13,6 +13,7 @@ const row = {
   enabled: true,
   clientSecretHash: hash,
   accessTokenTtl: 321,
+  refreshTokenTtl: 2592000,
   accessTokenAudience: ' exact-audience ',
 };
 const invalid = { ok: false, error: 'invalid_client' };
@@ -44,6 +45,7 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
         clientId,
         clientType: 'CONFIDENTIAL',
         accessTokenTtl: row.accessTokenTtl,
+        refreshTokenTtl: row.refreshTokenTtl,
         accessTokenAudience: row.accessTokenAudience,
       },
     });
@@ -56,6 +58,7 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
         enabled: true,
         clientSecretHash: true,
         accessTokenTtl: true,
+        refreshTokenTtl: true,
         accessTokenAudience: true,
       },
     });
@@ -78,6 +81,7 @@ describe('ClientAuthenticationService read-only safe boundary', () => {
         clientId: row.clientId,
         clientType: 'PUBLIC',
         accessTokenTtl: row.accessTokenTtl,
+        refreshTokenTtl: row.refreshTokenTtl,
         accessTokenAudience: row.accessTokenAudience,
       },
     });

@@ -10,6 +10,10 @@ import { authorizationCodeStateSchema } from '../src/oauth/authorization-code.st
 import { parseIdpSessionState } from '../src/session/idp-session-state.js';
 import { buildRedisKey } from '../src/redis/redis-key.js';
 import { accessTokenVerifier } from './access-token.check-support.js';
+import {
+  deleteOwnedRefresh,
+  verifyInitialRefresh,
+} from './refresh-token.check-support.js';
 
 const publicKeyPrerequisite = new Error('Public signing key prerequisite.');
 const clientId = 'student-spa';
@@ -81,6 +85,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
   let userId: string | undefined;
   let cookie: string | undefined;
   let sessionId: string | undefined;
+  let clientRecordId: string | undefined;
   let redisBefore = new Map<string, { value: string; expires: number }>();
 
   const http = (path: string, options: RequestInit = {}): Promise<Response> =>
@@ -100,6 +105,8 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       ['scopes', 'id'],
       ['client_scopes', 'client_id, scope_id'],
       ['_prisma_migrations', 'id'],
+      ['refresh_token_families', 'id'],
+      ['refresh_tokens', 'id'],
     ];
     return JSON.stringify(
       (
@@ -244,6 +251,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
               if (
                 stored.success &&
                 stored.data.userId === ownedId &&
+                sessions.rows.some((row) => row.id === stored.data.sessionId) &&
                 stored.data.clientId === clientId &&
                 stored.data.redirectUri === redirectUri
               )
@@ -277,6 +285,12 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
           1,
           'Owned identity changed before teardown.',
         );
+        await deleteOwnedRefresh(
+          connection,
+          ownedId,
+          sessions.rows.map((row) => row.id),
+          clientRecordId ? [clientRecordId] : [],
+        );
         await connection.query('DELETE FROM sessions WHERE user_id = $1', [
           ownedId,
         ]);
@@ -304,6 +318,8 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
     await redis.connect();
     phase = 'registry preconditions';
     const metadata = await db.query<{
+      id: string;
+      refresh_token_ttl: number;
       client_type: string;
       enabled: boolean;
       access_token_audience: string | null;
@@ -313,7 +329,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       profile_allowed: boolean;
     }>(
       `
-      SELECT c.client_type, c.enabled, c.access_token_audience, c.access_token_ttl,
+      SELECT c.id, c.refresh_token_ttl, c.client_type, c.enabled, c.access_token_audience, c.access_token_ttl,
         c.client_secret_hash IS NULL AS no_secret,
         EXISTS(SELECT 1 FROM client_redirect_uris r WHERE r.client_id=c.id AND r.redirect_uri=$2) AS redirect_registered,
         EXISTS(SELECT 1 FROM client_scopes cs JOIN scopes s ON s.id=cs.scope_id WHERE cs.client_id=c.id AND s.name='profile') AS profile_allowed
@@ -321,6 +337,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       [clientId, redirectUri],
     );
     const student = metadata.rows[0];
+    clientRecordId = student?.id;
     assert.ok(
       metadata.rows.length === 1 &&
         student.client_type === 'PUBLIC' &&
@@ -502,6 +519,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       );
       assert.ok(
         stored.userId === userId &&
+          stored.sessionId === sessionId &&
           stored.clientId === clientId &&
           stored.redirectUri === redirectUri &&
           JSON.stringify(stored.grantedScopes) === '["profile"]' &&
@@ -542,12 +560,20 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       };
       phase = 'token exchange and public-key verification';
       const token = await exchange();
-      await verifyToken(token, await token.text(), {
+      const { refreshToken } = await verifyToken(token, await token.text(), {
         subject: userId,
         audience,
         ttlSeconds: student.access_token_ttl,
         scopes: ['profile'],
       });
+      const refreshExpected = {
+        userId,
+        clientId: student.id,
+        sessionId,
+        scopes: ['profile'],
+        ttlSeconds: student.refresh_token_ttl,
+      };
+      await verifyInitialRefresh(db, refreshToken, refreshExpected);
       assert.equal(
         await redis.exists(codeKey),
         0,
@@ -568,6 +594,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       assert.equal(replay.headers.get('pragma'), 'no-cache');
       assert.equal(replay.headers.get('location'), null);
       assert.equal(replay.headers.get('set-cookie'), null);
+      await verifyInitialRefresh(db, refreshToken, refreshExpected);
       assert.equal(
         await redis.exists(codeKey),
         0,
@@ -595,7 +622,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       // Boolean assertions never dump rows, hashes, cookies, codes or JWTs on failure.
       assert.ok(
         (await snapshotDb()) === dbBefore,
-        'Eight database fingerprints must be restored, including the full canonical registry and unrelated identities/sessions.',
+        'Ten database fingerprints must be restored, including refresh families/tokens, full canonical registry and unrelated identities/sessions.',
       );
       assert.ok(
         sameRedis(redisBefore, await snapshotRedis()),
@@ -607,7 +634,7 @@ async function checkAuthorizationCodeE2e(): Promise<void> {
       'M6.8 real-stack OAuth E2E passed: canonical PUBLIC student-spa/profile; HTTP register -> authorize 401 -> login/session -> identical authorize 302/state -> S256 token 200 -> RS256 public-key/claims verification -> replay invalid_grant.',
     );
     console.log(
-      'Owned logout and FK-ordered teardown passed; eight DB fingerprints and all unrelated Redis values/absolute expiry restored. Discovery/JWKS are 200; GET token remains 404; no ID/refresh token, client secret or private material printed.',
+      'M8.4 five-field response and exact initial family/root binding, hash-only storage, refresh TTL verified. Owned logout and FK-ordered teardown passed; ten DB fingerprints and unrelated Redis restored. No ID token issued; no credentials printed.',
     );
   } finally {
     if (redis.isOpen) redis.destroy();

@@ -768,9 +768,9 @@ code thứ hai hay log Location. Delivery lỗi không rollback code; entry tự
 
 M5.5 dùng random 256-bit (`randomBytes(32)`, base64url không padding), SHA-256 raw
 code thành lowercase hex và reserve `oauth:code:{codeHash}` bằng SET EX 120 NX.
-Strict JSON chỉ có clientId/userId/redirectUri/grantedScopes/codeChallenge/nonce/
+Strict JSON (M8.4) chỉ có clientId/userId/sessionId/redirectUri/grantedScopes/codeChallenge/nonce/
 authTime/expiresAt; protocol clientId và exact validated values được giữ nguyên,
-userId/authTime lấy từ central session, PKCE/nonce vắng mặt hợp lệ dùng null.
+userId/sessionId/authTime lấy cùng central session, PKCE/nonce vắng mặt hợp lệ dùng null.
 Expiry = một issue instant + 120000 ms; TTL cố định 120 giây. Collision không ghi đè,
 retry fresh code tối đa 3 lần, lỗi trả cùng safe 500. Raw code chỉ transient nội bộ,
 không nằm trong Redis/log/error/HTTP body; M5.6 chỉ đưa raw code vào validated
@@ -895,9 +895,9 @@ Seed giữ nguyên IDs, secrets, redirects/scopes và TTL; unrelated records kh�
 `AccessTokenIssuerService` dùng subject/grantedScopes từ consumed state, audience/TTL
 từ authenticated client và roles=[]/permissions=[] cho tới M9.4. JWT có đúng tám
 claims mục 31, header đúng `{alg: 'RS256', kid}`; không typ hoặc clock thứ hai.
-Response JSON đúng bốn field: `access_token`, `token_type: "Bearer"`,
-`expires_in: exp-iat`, `scope` cho OAuth-only grant. M7.6 thêm đúng `id_token`
-khi consumed grant có exact `openid` (mục 37); chưa có refresh token.
+Response giữ bốn access fields: `access_token`, `token_type: "Bearer"`,
+`expires_in: exp-iat`, `scope`. M7.6 thêm `id_token` cho exact `openid` (mục 37);
+M8.4 thêm `refresh_token` cho cả OAuth/OIDC, thành năm/sáu fields (mục 41).
 Key/claims/signing failure sau GETDEL trả fixed 500 `server_error` /
 `Token request failed.`; code vẫn burn, retry trả invalid_grant, không restore.
 
@@ -929,10 +929,10 @@ Probe dùng canonical PUBLIC student-spa, scope profile và user đăng ký qua 
 register → authorize 401 → login/cookie → cùng authorize request → callback/state
 → PKCE token → verify RS256/public key → replay invalid_grant. Cần stack/seed/keys
 đã sẵn sàng; không tự seed, generate/rotate keys hoặc follow callback tới frontend.
-Cleanup chỉ user/session/code của lần chạy; fingerprint 8 bảng và unrelated Redis
+Cleanup chỉ refresh/user/session/code của lần chạy; fingerprint 10 bảng và unrelated Redis
 values/absolute expiry phải giữ nguyên. Chạy trên stack local yên tĩnh, không in
 password/cookie/code/verifier/JWT. Đây chỉ là OAuth E2E, chưa kiểm chứng full OIDC
-hoặc ID/refresh token.
+hoặc ID Token; M8.4 bổ sung kiểm initial refresh persistence, không dùng refresh grant.
 
 ## 33. Public OpenID Provider Discovery (M7.1)
 
@@ -1004,7 +1004,7 @@ Lỗi chỉ fixed sanitized message, không native cause hoặc token/key/nonce 
 Chi tiết canonical nằm ở implementation spec mục 10.
 
 M7.6 dùng lại issuer này tại `POST /oauth/token` cho exact openid grant (mục 37).
-OAuth-only vẫn bốn fields; UserInfo scope-limited có ở mục 36. Không refresh token.
+M8.4 hiện trả năm fields OAuth-only, sáu fields OIDC (mục 41); UserInfo ở mục 36.
 
 ## 36. Bearer-protected, scope-limited UserInfo (M7.4–M7.5)
 
@@ -1065,14 +1065,14 @@ Mapping M7.5 giữ nguyên; M7.6 chỉ tích hợp ID Token vào token response 
 ## 37. OIDC Authorization Code integration + E2E (M7.6)
 
 `POST /oauth/token` chỉ xét `grantedScopes` của authorization code đã consume và
-verify binding/expiry/PKCE. Exact `openid` -> response đúng năm fields:
-`access_token`, `token_type: "Bearer"`, `expires_in`, `scope`, `id_token`.
-Không có exact openid (kể cả có nonce hoặc `OpenID`) -> đúng bốn fields M6.7,
+verify binding/expiry/PKCE. Từ M8.4, exact `openid` -> response đúng sáu fields:
+`access_token`, `token_type: "Bearer"`, `expires_in`, `scope`, `id_token`, `refresh_token`.
+Không có exact openid (kể cả có nonce hoặc `OpenID`) -> năm fields (bỏ `id_token`),
 không ID Token. Không dùng body/query/header/client allowed scopes để chọn OIDC.
-Mọi response vẫn no-store/no-cache, không Set-Cookie/Location hay refresh_token.
+Mọi response vẫn no-store/no-cache, không Set-Cookie/Location hoặc metadata nội bộ.
 
-Thứ tự cũ giữ nguyên: request -> client auth -> audience/TTL config -> GETDEL
-và binding/expiry -> PKCE -> access signing -> conditional ID Token -> một response.
+Thứ tự: request -> client auth -> access audience/TTL -> refresh TTL config -> GETDEL
+và binding/expiry -> PKCE -> access signing -> conditional ID Token -> refresh transaction -> một response.
 ID Token lấy sub/userId, aud/clientId và exact nonce từ consumed state, không query
 User. Student access-token aud=`student-api`, ID-token aud=`student-spa`.
 TTL cả hai token là client accessTokenTtl đã validate; từng builder dùng clock riêng,
@@ -1095,17 +1095,16 @@ pnpm --filter identity-server oidc-e2e:check
 
 OIDC check mới dùng PUBLIC student-spa với openid profile email, random state/nonce
 và S256 verifier: register -> authorize 401 -> login -> cùng authorize 302/state
--> năm token fields -> live Discovery/JWKS client verification -> UserInfo -> replay.
+-> sáu token fields -> live Discovery/JWKS client verification -> UserInfo -> replay.
 Client dùng JOSE kiểm RS256/issuer/client audience, exact nonce và sáu claims;
 cùng ID Token phải bị reject khi expected nonce khác hoặc audience là student-api.
 Không đọc PEM files để verify. UserInfo dùng access token, phải match ID Token sub
 trước khi nhận preferred_username/email. M6.8 vẫn riêng biệt, OAuth-only scope profile.
 
-Finally logout và cleanup chỉ owned User/Credential/Session/code/runtime state;
-kiểm fingerprint tám bảng, unrelated Redis values/absolute expiry và published JWKS
+Finally logout và cleanup chỉ owned refresh family/token, User/Credential/Session/code/runtime state;
+kiểm fingerprint mười bảng, unrelated Redis values/absolute expiry và published JWKS
 không đổi. Không sửa seed/registry/keys, flush Redis hoặc in token/code/nonce/password/
-cookie/PII. M7.6 không triển khai refresh-token runtime; M8.1 chỉ thêm persistence
-baseline bên dưới.
+cookie/PII. M8.4 bổ sung kiểm initial refresh binding/hash-only storage/TTL; chưa dùng refresh grant.
 
 Ghi chú M7.5 chưa thay đổi: khi có profile hoặc email, mapper select/validate cả
 username và email; persisted field không được yêu cầu nhưng hỏng vẫn có thể gây 500.
@@ -1117,13 +1116,12 @@ username và email; persisted field không được yêu cầu nhưng hỏng v�
 và central Session. Trạng thái chỉ ACTIVE/REVOKED, cùng createdAt và nullable
 reuseDetectedAt/revokedAt. Ba FK đều ON DELETE RESTRICT / ON UPDATE CASCADE;
 indexes theo từng FK + status, không unique trên tổ hợp user/client/session.
-Chi tiết tám fields canonical nằm ở implementation spec mục 11.
+Tám fields baseline và field thứ chín grantedScopes (M8.4) ở implementation spec mục 11.
 
 M8.1 chưa tạo individual token; M8.2 bên dưới thêm persistence model riêng.
-Family vẫn không có token/hash/expiry/scope snapshot; chưa có runtime
-issuance/rotation/reuse/revocation service hoặc refresh token qua HTTP.
-OAuth/OIDC token responses, Discovery/JWKS/UserInfo giữ nguyên M7.6. Seed runner
-không đổi và không tạo family rows; Client.refreshTokenTtl giữ nguyên.
+Family không có token/hash/expiry; M8.4 thêm scope snapshot và initial issuance.
+Rotation/reuse/revocation chưa có. M8.4 mở rộng responses, giữ Discovery/JWKS/UserInfo.
+Seed runner không đổi và không tạo family rows; Client.refreshTokenTtl giữ nguyên.
 
 Migration được apply explicit, không chạy khi startup/seed:
 
@@ -1140,7 +1138,7 @@ Family probe chỉ dùng PostgreSQL local, kiểm exact schema/defaults/indexes/
 multiple families và parent delete restrictions. Fixtures nằm trong transaction
 rollback; từ M8.2 fingerprint mười bảng gồm cả refresh_tokens phải giữ nguyên.
 Seed check vẫn chạy hai lần trong transaction rollback và kiểm không populate hoặc
-thay đổi family/token rows. Không cần token/runtime service.
+thay đổi family/token rows. Probe persistence không gọi token/runtime service.
 
 ## 39. Individual refresh-token persistence (M8.2)
 
@@ -1170,10 +1168,8 @@ exact schema/defaults, no raw-token columns, lineage RT1 -> RT2 -> RT3, unique h
 one child, nhiều NULL roots, FK và delete restrictions; fingerprint mười bảng phải
 giữ nguyên. Fixture tokenHash chỉ là text kiểm persistence, không phải token thật.
 Seed runner không đổi, không seed family/token. M8.2 không tự generate/hash;
-M8.3 thêm capability bên dưới, chưa có issuance, rotation, reuse/revocation hoặc
-refresh HTTP behavior. `/oauth/token` vẫn đúng bốn
-fields OAuth hoặc năm fields OIDC, không refresh_token; Discovery vẫn chỉ advertise
-authorization_code. M8.4+ chưa triển khai.
+M8.3 thêm material capability; M8.4 nối initial issuance/HTTP response (mục 41).
+Rotation/reuse/revocation chưa có; Discovery vẫn chỉ advertise authorization_code.
 
 ## 40. Internal opaque refresh-token material (M8.3)
 
@@ -1188,5 +1184,47 @@ Service stateless, không config/DB/Redis/signing/I/O, không giữ/log credenti
 không tạo family/token rows, tính expiry hoặc collision lookup/retry. Không đổi
 schema/migration, AuthorizationCodeService hay PasswordService. Unit tests kiểm tra
 format, 256 mẫu distinct, abc known vector, opaque inputs và sanitized crypto faults;
-không cần check command trùng lặp. M8.4 mới nối persistence/initial issuance.
-`/oauth/token` và Discovery vẫn không có refresh_token response/grant.
+không cần check command trùng lặp. M8.4 nối persistence/initial issuance bên dưới;
+generator M8.3 giữ nguyên. Discovery vẫn không advertise refresh_token grant.
+
+## 41. Initial refresh-token issuance (M8.4)
+
+Mỗi authorization-code exchange thành công tạo một ACTIVE family và một ACTIVE root
+token trong cùng Prisma transaction. Family gắn consumed userId, INTERNAL Client.id
+đã authenticate và exact sessionId đã capture cùng user tại authorize; không nhận
+session từ request hoặc tìm session mới nhất. State Redis nay bắt buộc UUID sessionId.
+Codes cũ thiếu field này fail strict parse và bị burn; chỉ cần authorize lại, không
+thêm compatibility cho ephemeral state.
+
+Family thêm `grantedScopes String[] @default([])` qua additive migration
+`20261023000000_add_refresh_token_family_granted_scopes`. Issuer luôn ghi defensive
+copy canonical nonempty scopes đúng case/order từ consumed grant. Default [] chỉ
+phục vụ compatibility của persistence; future refresh phải reject empty/malformed
+snapshot, không suy rộng scopes từ registry/RBAC/request. Token không lặp bindings/scopes.
+
+ClientAuthentication safe metadata thêm refreshTokenTtl trong cùng query, không lộ
+secret/hash. Validate access config rồi refresh TTL trước GETDEL: lỗi config -> safe
+500, code còn dùng được. Sau GETDEL/binding/PKCE: access signing -> optional ID Token
+-> `RefreshTokenIssuerService.issueInitial({userId, clientRecordId, sessionId,
+grantedScopes, ttlSeconds})` cuối cùng -> một response đầy đủ.
+
+Issuer chỉ phụ thuộc PrismaService + generator M8.3. Một `Date.now()` xác định
+issuedAt và expiresAt = issuedAt + client.refreshTokenTtl * 1000, kiểm safe arithmetic
+và valid Date. Root parentTokenId=null, consumedAt/revokedAt=null; family reuse/revoked
+metadata null. Raw 43-char/256-bit credential chỉ trả sau commit; DB chỉ lưu SHA-256
+hash, không raw token. Insert/FK/unique/generator lỗi -> fixed internal error, không
+cause/log/retry. Lỗi hậu GETDEL -> fixed 500 không partial access/ID/refresh token;
+code vẫn consumed, retry invalid_grant. Không có distributed transaction Redis/HTTP:
+lost commit/response không được retry hoặc restore code.
+
+OAuth success đúng `access_token, token_type, expires_in, scope, refresh_token`;
+OIDC thêm `id_token` (sáu fields), giữ claims/headers cũ. Chưa chấp nhận refresh grant:
+`grant_type=refresh_token` vẫn unsupported_grant_type, Discovery chỉ authorization_code.
+Không rotation/consume/reuse/revocation; M8.5+ chưa triển khai.
+
+Ngoài checks ở mục 37–39, chạy `pnpm --filter identity-server refresh-token-issuance:check`.
+Probe gọi real issuer/DB, kiểm binding/scope/root/TTL/hash-only, unique/FK failure
+rollback và không retry. OAuth/OIDC E2E cũng kiểm persistence mới. Finally teardown
+chỉ dữ liệu có ownership đã chứng minh: RefreshToken -> RefreshTokenFamily ->
+Session/Credential/User/client, kể cả lost reply/assertion failure; mười database
+fingerprints và unrelated Redis phải trở về baseline. Không sửa seed hoặc signing keys.

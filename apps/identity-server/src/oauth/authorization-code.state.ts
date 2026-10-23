@@ -10,6 +10,7 @@ const scope = opaque.refine(
 export const authorizationCodeStateSchema = z.strictObject({
   clientId: opaque,
   userId: z.uuid(),
+  sessionId: z.uuid(),
   redirectUri: opaque,
   grantedScopes: z.array(scope).min(1),
   codeChallenge: z

@@ -12,6 +12,7 @@ import {
   type AuthorizationCodeState,
 } from '../src/oauth/authorization-code.state.js';
 import { accessTokenVerifier } from './access-token.check-support.js';
+import { ownedRefreshIdentity } from './refresh-token.check-support.js';
 
 const invalidGrant = {
   error: 'invalid_grant',
@@ -54,6 +55,8 @@ async function checkConsumption(): Promise<void> {
   });
   const owned = new Set<string>();
   const ownedClientId = randomUUID();
+  const identity = ownedRefreshIdentity(db, 'm62');
+  const clientRecordIds: string[] = [ownedClientId];
   const opaqueClientId = ' owned e\u0301 CLIENT ' + randomUUID() + ' ';
   let clientCreated = false;
   let cases = 0;
@@ -67,9 +70,10 @@ async function checkConsumption(): Promise<void> {
     );
   const base = (): AuthorizationCodeState => ({
     clientId: 'student-spa',
-    userId: randomUUID(),
+    userId: identity.userId,
+    sessionId: identity.sessionId,
     redirectUri: 'http://localhost:3200/callback',
-    // OAuth-only fixture: retain this probe's four-field M6 response contract.
+    // OAuth-only fixture; M8.4 adds the initial opaque refresh credential.
     grantedScopes: ['profile'],
     codeChallenge: null,
     nonce: 'probe-owned-nonce',
@@ -146,6 +150,8 @@ async function checkConsumption(): Promise<void> {
       ['scopes', 'id'],
       ['client_scopes', 'client_id, scope_id'],
       ['_prisma_migrations', 'id'],
+      ['refresh_token_families', 'id'],
+      ['refresh_tokens', 'id'],
     ];
     return JSON.stringify(
       (
@@ -197,6 +203,7 @@ async function checkConsumption(): Promise<void> {
     await redis.connect();
     const dbBefore = await snapshotDb();
     const codesBefore = await snapshotCodes();
+    await identity.create();
     await db.query(
       'INSERT INTO clients (id, client_id, name, client_type, enabled, access_token_audience) VALUES ($1, $2, $3, $4, true, $5)',
       [
@@ -209,13 +216,15 @@ async function checkConsumption(): Promise<void> {
     );
     clientCreated = true;
     const metadata = await db.query<{
+      id: string;
       client_id: string;
       access_token_audience: string;
       access_token_ttl: number;
     }>(
-      'SELECT client_id, access_token_audience, access_token_ttl FROM clients WHERE client_id = ANY($1::text[])',
+      'SELECT id, client_id, access_token_audience, access_token_ttl FROM clients WHERE client_id = ANY($1::text[])',
       [['student-spa', opaqueClientId]],
     );
+    clientRecordIds.push(...metadata.rows.map((row) => row.id));
     for (const row of metadata.rows)
       issuance.set(row.client_id, {
         audience: row.access_token_audience,
@@ -433,6 +442,7 @@ async function checkConsumption(): Promise<void> {
         400,
       );
     }
+    await identity.cleanup(clientRecordIds);
     await db.query('DELETE FROM clients WHERE id = $1 AND client_id = $2', [
       ownedClientId,
       opaqueClientId,
@@ -453,13 +463,14 @@ async function checkConsumption(): Promise<void> {
         'Owned code remains after consume/expiry.',
       );
     console.log(
-      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, Redis/logical expiry, exact bindings/burn, S256 43/128 verifiers, missing/empty/malformed/wrong verifier burn/replay, null-challenge bypass and corrupt-state fail-closed; enabled PUBLIC resolution, signed JWT verification; 8 DB fingerprints and unrelated code snapshots restored; owned client removed; zero owned keys remain.`,
+      `M6.2/M6.3 consumption and PKCE check passed (${cases} HTTP cases): first/replay/unknown, 1-of-12 concurrent winner, expiry, exact bindings/burn, S256 43/128, invalid verifier burn/replay, null-challenge bypass, corrupt-state fail-closed; five-field response and signed JWT verified; 10 DB fingerprints/unrelated code snapshots restored; owned refresh/identity/client state removed.`,
     );
   } finally {
     try {
       if (redis.isReady) for (const key of owned) await redis.del(key);
     } finally {
       if (redis.isOpen) redis.destroy();
+      await identity.cleanup(clientRecordIds);
       if (clientCreated)
         await db.query('DELETE FROM clients WHERE id = $1 AND client_id = $2', [
           ownedClientId,

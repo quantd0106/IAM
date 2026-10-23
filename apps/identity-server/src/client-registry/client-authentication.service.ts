@@ -13,6 +13,7 @@ export type TokenClientAuthenticationResult =
         clientType: ClientType;
         accessTokenTtl: number;
         accessTokenAudience: string | null;
+        refreshTokenTtl: number;
       };
     }
   | { ok: false; error: 'invalid_client' };
@@ -25,6 +26,7 @@ const authenticationSelection = {
   clientSecretHash: true,
   accessTokenTtl: true,
   accessTokenAudience: true,
+  refreshTokenTtl: true,
 } as const satisfies Prisma.ClientSelect;
 const invalidClient = { ok: false, error: 'invalid_client' } as const;
 
@@ -69,6 +71,7 @@ export class ClientAuthenticationService {
           clientType: client.clientType,
           accessTokenTtl: client.accessTokenTtl,
           accessTokenAudience: client.accessTokenAudience,
+          refreshTokenTtl: client.refreshTokenTtl,
         },
       };
     } catch {

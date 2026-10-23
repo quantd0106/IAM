@@ -95,6 +95,10 @@ const snapshot = (
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY client_id, scope_id)::text, '[]')) FROM client_scopes t
   UNION ALL SELECT '_prisma_migrations', COUNT(*)::int,
     md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM _prisma_migrations t
+  UNION ALL SELECT 'refresh_token_families', COUNT(*)::int,
+    md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM refresh_token_families t
+  UNION ALL SELECT 'refresh_tokens', COUNT(*)::int,
+    md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]')) FROM refresh_tokens t
   ORDER BY relation
 `;
 type Writes = {
@@ -586,6 +590,7 @@ async function checkAuthorizationRequests(): Promise<void> {
           assert.deepEqual(Object.keys(stored), [
             'clientId',
             'userId',
+            'sessionId',
             'redirectUri',
             'grantedScopes',
             'codeChallenge',
@@ -596,6 +601,7 @@ async function checkAuthorizationRequests(): Promise<void> {
           assert.deepEqual(stored, {
             clientId: parameters.get('client_id'),
             userId,
+            sessionId: id,
             redirectUri: parameters.get('redirect_uri'),
             grantedScopes: [...new Set(parameters.get('scope')!.split(' '))],
             codeChallenge: parameters.get('code_challenge'),
@@ -1227,7 +1233,7 @@ async function checkAuthorizationRequests(): Promise<void> {
       'Real login -> cookie -> same authorization request -> logout passed on temporary and Compose apps; Redis idle touch/absolute cap, coherence and controlled Redis/Prisma faults passed; temporary server/clients closed.',
     );
     console.log(
-      `M5.1-M5.6 passed ${verifiedHttpCases} real HTTP authorization cases; returned-code SHA-256/eight-field state/unchanged 120-second TTL/exact query-fragment and Unicode-state preservation/independent codes/NX collision retry and exhaustion/disconnected code Redis failure passed; all probe-owned code keys cleaned; no token/consume; Redis snapshot restored unchanged.`,
+      `M5.1-M5.6 passed ${verifiedHttpCases} real HTTP authorization cases; returned-code SHA-256/nine-field state including trusted sessionId/unchanged 120-second TTL/exact query-fragment and Unicode-state preservation/independent codes/NX collision retry and exhaustion/disconnected code Redis failure passed; all probe-owned code keys cleaned; no token/consume; ten DB fingerprints and Redis snapshot restored unchanged.`,
     );
   } finally {
     Object.assign(console, originals);

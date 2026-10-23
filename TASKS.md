@@ -850,7 +850,7 @@ Acceptance criteria:
 
 ## M8.4 — Initial refresh-token issuance
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

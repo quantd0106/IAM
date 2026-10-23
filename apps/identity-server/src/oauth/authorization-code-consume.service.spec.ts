@@ -31,6 +31,7 @@ const now = 1800000000000;
 const state: AuthorizationCodeState = {
   clientId: ' exact e\u0301 CLIENT ',
   userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+  sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
   redirectUri: ' HTTPS://EXAMPLE.invalid:443/a/../%2f?b=2&a=%2520#fragment ',
   grantedScopes: ['profile', 'openid'],
   codeChallenge: 'A'.repeat(43),
@@ -201,6 +202,8 @@ describe('AuthorizationCodeService M6.2 atomic consumption', () => {
     '[]',
     '{}',
     JSON.stringify({ ...state, userId: 'private-invalid-user' }),
+    JSON.stringify({ ...state, sessionId: undefined }),
+    JSON.stringify({ ...state, sessionId: 'not-a-uuid' }),
     JSON.stringify({ ...state, expiresAt: 'later' }),
     JSON.stringify({ ...state, expiresAt: Number.MAX_SAFE_INTEGER + 1 }),
     JSON.stringify({ ...state, codeChallenge: 'invalid' }),

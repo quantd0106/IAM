@@ -16,6 +16,7 @@ import {
   type MockInstance,
 } from 'vitest';
 import { OAuthModule } from './oauth.module.js';
+import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
 import { TokenRequestService } from './token-request.service.js';
 import { AuthorizationCodeService } from './authorization-code.service.js';
 import { AuthorizationService } from './authorization.service.js';
@@ -88,6 +89,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
         clientType: 'PUBLIC' as const,
         accessTokenTtl: 600,
         accessTokenAudience: 'fixture-api',
+        refreshTokenTtl: 2592000,
       },
     }),
   );
@@ -102,6 +104,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
       JSON.stringify({
         clientId: input.client_id,
         userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+        sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
         redirectUri: input.redirect_uri,
         grantedScopes: ['openid', 'profile'],
         codeChallenge: null,
@@ -152,6 +155,10 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
           }),
       })
       // This suite isolates request shape/GETDEL/PKCE; real OIDC signing is tested separately.
+      .overrideProvider(RefreshTokenIssuerService)
+      .useValue({
+        issueInitial: () => Promise.resolve({ refreshToken: 'A'.repeat(43) }),
+      })
       .overrideProvider(IdTokenIssuerService)
       .useValue({
         issue: () => Promise.resolve({ idToken: 'isolated-id-issuer-fixture' }),
@@ -245,6 +252,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
         expires_in: 600,
         scope: 'openid profile',
         id_token: 'isolated-id-issuer-fixture',
+        refresh_token: 'A'.repeat(43),
       });
     else expect(response.body).toEqual(expected);
     if (status === 400 && (expected === invalid || expected === unsupported))
@@ -581,6 +589,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
           expires_in: 600,
           scope: 'openid profile',
           id_token: 'isolated-id-issuer-fixture',
+          refresh_token: 'A'.repeat(43),
         });
       else expect(response.body).toEqual(invalidGrant);
       expect(response.headers['cache-control']).toBe('no-store');

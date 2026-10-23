@@ -365,8 +365,8 @@ temporary User fixture with finally cleanup and removal verification; no credent
 sessions, registry or Redis mutations. It does not generate/rotate keys and is not
 full OIDC E2E. Discovery:check checks
 the advertised UserInfo URL for 401 + Bearer challenge; metadata remains unchanged.
-POST /oauth/token preserves four access-token fields for OAuth-only grants;
-M7.6 conditionally adds id_token for exact openid grants, never refresh_token.
+POST /oauth/token preserves the four access-token fields; M7.6 conditionally adds
+id_token for exact openid grants. M8.4 adds initial refresh_token to both responses.
 
 ### M7.5 scope-limited UserInfo claims
 
@@ -411,7 +411,7 @@ Discovery's exact metadata/scopes remain unchanged, without claims_supported.
 The internal M7.3 ID Token remains exactly iss/sub/aud/iat/exp/nonce; profile/email
 are supplied only through UserInfo. M7.5 did not change token issuance; M7.6 below
 conditionally adds id_token to the four M6.7 access-token fields for exact openid
-grants. No refresh_token is implemented.
+grants. M8.4 additionally returns an initial refresh_token; its use remains deferred.
 
 ---
 
@@ -441,9 +441,9 @@ GET /oauth/token remains absent.
 
 M6.4 adds a read-only ClientAuthenticationService exported by ClientRegistryModule.
 The mandatory token endpoint order is M6.1 shape/grant validation -> M6.4 client
-resolution/authentication -> M6.7 issuance metadata validation -> M6.2 code
+resolution/authentication -> M6.7 access metadata -> M8.4 refresh TTL validation -> M6.2 code
 hashing/GETDEL/binding -> M6.3 PKCE -> access claims -> RS256 access signing ->
-M7.6 conditional ID Token -> single HTTP 200.
+M7.6 conditional ID Token -> M8.4 initial refresh transaction -> single HTTP 200.
 Resolve the exact body client_id against Client.clientId: no trim, case conversion,
 Unicode normalization, alias or fallback. Unknown/disabled clients fail authentication.
 PUBLIC clients (Student SPA) require no secret and proceed only without an Authorization
@@ -458,7 +458,8 @@ exactly; do not transform the already framework-decoded body or trim/normalize/r
 either credential. Other schemes and malformed/missing credentials are rejected.
 Verify the presented secret using installed Argon2 against the persisted Argon2id hash.
 The stored hash stays private to this capability; M6.7 success returns only
-id/clientId/clientType/accessTokenTtl/accessTokenAudience, selected in that same query.
+id/clientId/clientType/accessTokenTtl/accessTokenAudience and (since M8.4)
+refreshTokenTtl, selected in that same query.
 ClientLookupService's safe metadata projection and ClientSecretService's issuance/
 rotation lifecycle are unchanged; authentication never calls issueSecret().
 
@@ -482,7 +483,7 @@ grant dispatch and M6.4 authentication, hash the exact framework-decoded code us
 createHash('sha256').update(code).digest('hex'), then buildRedisKey('oauth:code', hash).
 Exactly one RedisService.getAndDelete (native GETDEL) is the consumption authority:
 no GET/DEL pair, TTL read, script, retry write or restoration. Parse returned JSON
-and validate through the unchanged authorizationCodeStateSchema. Validate Date.now()
+and validate through authorizationCodeStateSchema (including M8.4 sessionId). Validate Date.now()
 as a non-negative safe integer, require state.expiresAt > now, then compare exact
 state.clientId === request.client_id and state.redirectUri === request.redirect_uri.
 The stored clientId is the external OAuth identifier, not Client.id; no DB/registry
@@ -618,6 +619,7 @@ oauth:code:{codeHash}
 
 clientId
 userId
+sessionId
 redirectUri
 grantedScopes
 codeChallenge
@@ -633,12 +635,12 @@ Use `buildRedisKey('oauth:code', codeHash)`: concrete `oauth:code:<64-hex-hash>`
 no literal braces. Raw codes exist only transiently in memory, never in Redis,
 PostgreSQL, logs, errors or HTTP bodies. The service is not exported by OAuthModule.
 
-Strict JSON contains exactly the eight fields above. clientId is the validated
-protocol Client.clientId, not internal Client.id; userId/authTime come from the
+Strict JSON contains exactly the nine fields above since M8.4. clientId is the validated
+protocol Client.clientId, not internal Client.id; userId/sessionId/authTime come from the SAME
 authenticated IdP session. Preserve exact validated redirectUri, M5.3 grantedScopes
 and their order, PKCE challenge and nonce. Absent permitted confidential PKCE or
-non-openid nonce is explicit null. No state, sessionId/cookie, profile or token fields.
-Validate non-empty opaque strings, UUID userId, exact scope-token syntax, nullable
+non-openid nonce is explicit null. No state/cookie, profile or token fields.
+Validate non-empty opaque strings, UUID userId/sessionId, exact scope-token syntax, nullable
 43-character S256 challenge and non-negative safe-integer epoch-ms timestamps.
 
 Capture one issue clock; expiresAt = issue instant + 120000 ms, safely after issue.
@@ -954,10 +956,10 @@ protected header exactly {alg: 'RS256', kid: configured key ID}. No typ, additio
 claims, claim-replacing helpers or second issuance clock. Return internally only
 accessToken, expiresIn=claims.exp-claims.iat and scope=claims.scope.
 
-POST /oauth/token returns HTTP 200 application/json with exactly access_token,
-token_type='Bearer', expires_in and scope; Cache-Control: no-store and
-Pragma: no-cache, without Location/Set-Cookie. This remains exact for OAuth-only
-grants; M7.6 adds only id_token for exact consumed openid grants. No refresh token.
+M6.7 introduced the four access fields: access_token, token_type='Bearer',
+expires_in and scope. Current HTTP 200 application/json additionally includes
+M8.4 refresh_token and, for exact openid grants, M7.6 id_token. Set Cache-Control:
+no-store and Pragma: no-cache, without Location/Set-Cookie.
 Claims/key/signing/internal failures after consumption return the same sanitized
 500; code stays permanently burned, with no restoration/retry write. A retry of
 that code returns invalid_grant before reaching claims/keys/signing. Existing
@@ -1059,8 +1061,9 @@ services remain unexported. Startup, process health and Discovery remain unchang
 no new eager key loading or database query is introduced.
 
 Preserve the token pipeline: request shape/grant -> client authentication ->
-validate registered access-token audience/TTL -> atomic GETDEL, binding/expiry ->
-PKCE -> access-token claims/signing -> conditional ID Token -> one HTTP response.
+validate registered access-token audience/TTL -> validate refresh TTL (M8.4) -> atomic
+GETDEL, binding/expiry -> PKCE -> access-token claims/signing -> conditional ID Token
+-> initial refresh persistence (M8.4) -> one HTTP response.
 Only consumed grant.state.grantedScopes.includes('openid') selects OIDC, with exact
 case-sensitive token matching, AFTER consumption/PKCE and access-token issuance.
 Request body/query/headers, allowed scopes, client/redirect or nonce presence alone
@@ -1075,9 +1078,9 @@ normalization, separate TTL env or schema column is added. Each builder retains
 its own single clock: exp-iat equals the same TTL independently, without requiring
 identical iat values. expires_in describes only the access-token lifetime.
 
-OAuth-only HTTP 200 has exactly access_token, token_type='Bearer', expires_in and
-scope. OIDC HTTP 200 has exactly those four plus id_token. Both set no-store and
-Pragma no-cache, without Set-Cookie or Location. Never return refresh_token or
+OAuth-only HTTP 200 now has exactly access_token, token_type='Bearer', expires_in,
+scope and refresh_token (M8.4). OIDC HTTP 200 has those five plus id_token. Both set
+no-store and Pragma no-cache, without Set-Cookie or Location. Never return
 profile/session/nonce metadata separately. ID Token remains exactly the six M7.3
 claims: iss/sub/aud/iat/exp/nonce, even for openid profile email. No at_hash,
 auth_time, RBAC or profile claims are added; profile/email remain UserInfo-only.
@@ -1093,11 +1096,11 @@ access token may remain transient in memory but is not delivered on ID-token
 failure. Never restore/reinsert code; retry receives fixed 400 invalid_grant.
 Existing 401 invalid_client and 400 grant/PKCE contracts remain unchanged.
 
-Explicit oidc-e2e:check is separate from frozen OAuth-only M6.8 profile E2E. Use
+Explicit oidc-e2e:check is separate from the OAuth-only M6.8 profile E2E. Use
 canonical PUBLIC student-spa, exact callback, S256 and openid profile email with
 random state/nonce/verifier. Real HTTP registration -> authorize 401 -> login/IdP
 cookie -> identical authorize 302/exact state -> token exchange (no Basic/secret)
--> exact five-field response -> replay invalid_grant. Validate BOTH signatures
+-> exact six-field response (M8.4) -> replay invalid_grant. Validate BOTH signatures
 through LIVE Discovery-advertised public JWKS, never direct PEM reads. JOSE
 enforces RS256, expected issuer and each token's distinct audience; validate exact
 header/claim allowlists, subject and per-token TTL. Explicitly compare ID-token
@@ -1109,10 +1112,10 @@ sub/preferred_username/email for the registered identity. Before accepting profi
 claims, explicitly require UserInfo.sub === validated ID Token.sub. Preserve the
 existing standalone UserInfo check and ID-token-as-Bearer rejection tests.
 Use M6.8's unique ownership proof, finally logout/runtime/code/FK-ordered row
-cleanup, eight database fingerprints and unrelated Redis value/absolute-expiry
+cleanup, ten database fingerprints (including M8.4 refresh state) and unrelated Redis value/absolute-expiry
 snapshots. Compare published JWKS before/after; no key writes, canonical registry
-changes, seed, flush or sensitive output. M8.1 below adds only family persistence;
-refresh-token issuance/rotation remains absent.
+changes, seed, flush or sensitive output. M8.4 also verifies initial refresh binding,
+hash-only persistence and lifetime. Refresh grant/rotation remains absent.
 
 ---
 
@@ -1120,7 +1123,7 @@ refresh-token issuance/rotation remains absent.
 
 ### M8.1 RefreshTokenFamily persistence baseline
 
-RefreshTokenFamily maps to refresh_token_families and contains exactly id
+RefreshTokenFamily maps to refresh_token_families. Its eight-field M8.1 baseline has id
 (Prisma-generated UUID primary key), required UUID userId/clientId/sessionId
 (user_id/client_id/session_id), status (RefreshTokenFamilyStatus, ACTIVE default),
 nullable reuseDetectedAt/revokedAt (reuse_detected_at/revoked_at), and createdAt
@@ -1141,9 +1144,9 @@ reuseDetectedAt is future forensic/security metadata; revokedAt records future
 revocation time. M8.7 may later revoke a family and its related IdP session on reuse,
 but M8.1 defines no transitions, service, repository, HTTP route or runtime behavior.
 At M8.1 there was no individual RefreshToken model/status; M8.2 below adds those
-rows referencing family.id. There is still no raw token, token hash, parent token,
-issuance/expiry, scope/permission/role/audience or TTL snapshot in this family.
-Client.refreshTokenTtl remains unchanged and will govern later issuance.
+rows referencing family.id. M8.4 adds the ninth scalar field grantedScopes below.
+There is no raw token/hash/parent, issuance/expiry, permission/role/audience or TTL
+snapshot in this family. Client.refreshTokenTtl governs M8.4 initial issuance.
 
 The additive migration creates only the family enum/table/indexes/foreign keys,
 without old-row updates, backfill or seeded family rows. Existing seed runner is
@@ -1151,9 +1154,9 @@ unchanged: canonical registry remains three clients/four scopes and existing exa
 redirects/assignments/settings. A small explicit local PostgreSQL rollback probe
 verifies generated model/enum, exact columns/defaults, multiplicity, relations,
 indexes and FK/delete integrity without committed fixture rows. Seed regression
-also verifies it never populates families. OAuth-only token success remains four
-fields and OIDC success five; neither includes refresh_token. Discovery, JWKS,
-access/ID Tokens, UserInfo and M6/M7 behavior remain unchanged.
+also verifies it never populates families. M8.1 made no HTTP changes; M8.4 below
+extends OAuth/OIDC responses to five/six fields. Discovery/JWKS/access/ID-token
+claims and UserInfo remain unchanged.
 
 ### M8.2 normalized RefreshToken persistence
 
@@ -1209,11 +1212,10 @@ and FK/delete restrictions inside a rollback transaction. Ten-table fingerprints
 include refresh_tokens; seed:check proves both seed runs preserve both refresh
 tables. Fixed probe messages never print hashes, identifiers or private errors.
 
-This is persistence only: no service, generator/hasher, issuance, consumption,
-rotation, reuse detection, revocation, Redis state or HTTP change. OAuth-only
-success remains exactly four fields, OIDC exactly five, never refresh_token;
-Discovery still advertises only authorization_code. M8.3 below adds material-only
-generation/hashing; M8.4+ persistence/issuance remains future work.
+M8.2 itself was persistence only, with no runtime/HTTP change. M8.3 below adds
+material-only generation/hashing; M8.4 integrates initial issuance and five/six-field
+responses. Discovery still advertises only authorization_code. Consumption,
+rotation, reuse detection and revocation remain future work.
 
 ### M8.3 opaque refresh-token material capability
 
@@ -1247,7 +1249,7 @@ only; there are no fields/caches/globals retaining it and no raw-token persisten
 
 There is no ConfigService, Prisma/model/repository, Redis, signing-key, filesystem,
 network, status/expiry policy, collision query or retry. RefreshToken.tokenHash's
-existing unique index remains defense-in-depth; later M8.4 persistence owns any
+existing unique index remains defense-in-depth; M8.4 persistence owns any
 collision handling. Authorization-code crypto and PasswordService are unchanged.
 No family/token row or schema/migration is created by M8.3. Unit tests use real
 randomness for a 256-sample sanity check (not a collision-resistance proof), the
@@ -1255,12 +1257,82 @@ public abc SHA-256 vector, opaque UTF-8 comparisons and focused crypto fault
 injection; assertions never print generated material. Static/module boundaries
 guard against persistence/I/O dependencies and eager generation.
 
-M8.3 generates material only. M8.4 will create family/token rows and return the
-initial refresh token; that integration is not implemented here. /oauth/token
-still returns exactly four OAuth fields or five OIDC fields, never refresh_token.
-Refresh grant, rotation/reuse/revocation, Discovery and M6/M7 remain unchanged.
+M8.3 remains material-only. The separate M8.4 issuer below creates family/token rows
+and returns the initial refresh token through five/six-field OAuth/OIDC responses.
+Refresh grant, rotation/reuse/revocation and Discovery remain unchanged.
 
-### Future refresh-token issuance policy (M8.4+)
+### M8.4 initial refresh-token issuance
+
+Every successful authorization_code exchange now issues one initial refresh token,
+without accepting refresh_token grants. M8.4 supersedes the historical M6/M7
+four/five-field staging: OAuth success has exactly access_token/token_type/
+expires_in/scope/refresh_token; OIDC has those five plus id_token. No refresh expiry,
+family/token IDs or hashes are returned. Existing no-store/no-cache and absence of
+Set-Cookie/Location stay unchanged. Discovery still advertises authorization_code
+only; refresh grant, rotation/reuse/revocation remain M8.5+ work.
+
+AuthorizationCodeState now requires UUID sessionId, captured from the SAME
+authenticated IdP session as userId at /authorize and stored unchanged. No request
+session identifier, latest-session lookup, session substitution or new status
+introspection is allowed at exchange. Older ephemeral codes without sessionId fail
+the strict consumed-state schema after upgrade and stay burned; accept their
+short-lived expiry/re-authorization, without compatibility/version fallback.
+
+ClientAuthenticationService's same query now returns safe refreshTokenTtl as well
+as internal id/clientId/clientType/accessTokenTtl/accessTokenAudience; secret/hash
+remain private. Validate access configuration, then requireRefreshTokenIssuance
+BEFORE GETDEL: refresh TTL must be positive safe-integer seconds, safely convertible
+to milliseconds and a valid Date duration. Invalid config returns existing fixed
+server_error without consuming the code. After GETDEL retain binding/expiry/PKCE,
+then access signing, conditional ID Token, and LAST initial refresh persistence.
+
+RefreshTokenFamily gains grantedScopes String[] @default([]), mapped granted_scopes
+(PostgreSQL text[] with Prisma-generated nullable SQL list semantics). The additive
+migration's empty-array default supports existing
+persistence fixtures/legacy rows without inventing grants; it is NOT authorization.
+The production issuer always explicitly writes a nonempty, unique array of canonical
+OAuth scope tokens from consumed state, with exact strings/case/order and a defensive
+copy. Future refresh must reject empty/malformed snapshots, never infer or broaden
+them from current client scopes/RBAC/request data (SQL NULL is also malformed).
+Family is the grant boundary;
+individual RefreshToken retains exactly the normalized M8.2 fields, no scope column.
+All existing FKs/indexes/statuses/TTL settings and seed runner remain unchanged.
+
+Non-global TokensModule imports PrismaModule and provides/exports
+RefreshTokenIssuerService. It depends only on PrismaService and the unchanged M8.3
+RefreshTokenGeneratorService. issueInitial({userId, clientRecordId, sessionId,
+grantedScopes, ttlSeconds}) defensively validates UUIDs, canonical nonempty unique
+scopes and TTL, with no repair or registry/session lookup. Sources are consumed
+state.userId, authenticated INTERNAL Client.id, consumed state.sessionId and
+consumed grantedScopes, never protocol client_id as an FK.
+
+Capture Date.now() once: require safe/nonnegative nowMs, positive safe ttlMs =
+ttlSeconds*1000, safe expiresMs = nowMs+ttlMs > nowMs, and valid issued/expiry Dates.
+Use client.refreshTokenTtl, not access/session/global TTL. Generate exactly once
+via M8.3, then one Prisma transaction creates ACTIVE family (null reuse/revocation,
+scope snapshot) followed by one ACTIVE root token with familyId, tokenHash only,
+parentTokenId=null, issuedAt/expiresAt and null consumedAt/revokedAt. Return only
+{refreshToken: rawToken} AFTER commit. No collision lookup/retry; FK/unique/insert
+failure rolls back both records. No raw token enters persisted data or logs.
+
+All internal input/generator/clock/DB/transaction failures throw only
+`Refresh token issuance failed.` without native cause, IDs, scopes or credentials.
+At the HTTP boundary any post-GETDEL failure returns the existing fixed 500
+server_error / Token request failed., never partial access/ID/refresh credentials;
+the code stays burned and retry returns invalid_grant. There is no distributed
+transaction with Redis or HTTP delivery: a lost commit/HTTP reply is not retried
+or compensated by recreating the code; never report credentials before DB success.
+
+The explicit refresh-token-issuance:check calls the real issuer/generator on owned
+local fixtures, proves binding/scopes/root/hash-only storage/TTL and transaction
+rollback on insertion failure, then deletes ONLY owned token -> family -> session/
+user/client rows in finally. Updated OAuth/OIDC E2E checks preserve all existing
+security assertions, verify initial refresh state and extend ten-table fingerprints;
+cleanup proves user/session/client ownership and removes refresh records before
+FK-restricted parents, including lost response/assertion failure paths. Seed checks
+remain rollback-only and never populate refresh state.
+
+### Future refresh-token usage policy (M8.5+)
 
 TTL:
 
@@ -1268,8 +1340,8 @@ TTL:
 30 days
 ```
 
-Future issuance uses the normalized M8.2 layout and M8.3 hash contract above.
-Never persist raw refresh token; no TTL/expiry calculation is introduced in M8.3.
+Initial issuance uses the normalized M8.2 layout and M8.3 hash contract above.
+Never persist raw refresh token. Using/rotating the issued credential is separate work.
 
 ---
 
@@ -1983,17 +2055,16 @@ session; repeat the identical authorize request with that cookie, without follow
 the callback. Verify exact callback/state, real hash-keyed code/session binding,
 S256 exchange, and signed access-token response using the configured public key
 and JOSE RS256 verification. Replay the same exchange must return invalid_grant
-without recreating code state. No ID/refresh token; M7.1 adds Discovery metadata
-and M7.2 makes JWKS live; M7.4 UserInfo requires Bearer credentials. Only obsolete metadata
-route-status assertions are updated in this M6.8 regression; its
-OAuth/session/code/token flow is unchanged.
+without recreating code state. No ID Token for this OAuth-only grant; M8.4 adds
+initial refresh issuance/binding/hash/TTL checks. M7.1 adds Discovery metadata,
+M7.2 makes JWKS live and M7.4 UserInfo requires Bearer credentials.
 
 The check requires existing provisioned keys and never generates/rotates them.
 Missing/invalid public verification key yields a fixed prerequisite message without
 paths/PEMs. Password/cookie/code/verifier/JWT remain transient and never printed,
 including assertion failures. Finally log out only the proven owned session and
-remove only owned runtime keys and Session/Credential/User rows in FK order,
-recovering owned state after lost replies where possible. Compare eight full-row
+remove only owned runtime keys and RefreshToken/RefreshTokenFamily/Session/Credential/User
+rows in FK order, recovering owned state after lost replies where possible. Compare ten full-row
 database fingerprints and bounded unrelated Redis value/absolute-expiry snapshots
 after cleanup. Run on a quiet local development stack; fail safely if unrelated
 keys are about to expire, rather than modifying/restoring unrelated data.

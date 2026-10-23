@@ -1,6 +1,10 @@
 // Explicit M7.6 real-stack OIDC client check. Owned cleanup follows M6.8;
 // keep the separate OAuth-only M6.8 check frozen. Never read signing PEM files.
 import 'dotenv/config';
+import {
+  deleteOwnedRefresh,
+  verifyInitialRefresh,
+} from './refresh-token.check-support.js';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
@@ -177,6 +181,7 @@ async function checkOidcE2e(): Promise<void> {
   let userId: string | undefined;
   let cookie: string | undefined;
   let sessionId: string | undefined;
+  let clientRecordId: string | undefined;
   let redisBefore = new Map<string, { value: string; expires: number }>();
 
   const http = (path: string, options: RequestInit = {}): Promise<Response> =>
@@ -196,6 +201,8 @@ async function checkOidcE2e(): Promise<void> {
       ['scopes', 'id'],
       ['client_scopes', 'client_id, scope_id'],
       ['_prisma_migrations', 'id'],
+      ['refresh_token_families', 'id'],
+      ['refresh_tokens', 'id'],
     ];
     return JSON.stringify(
       (
@@ -340,6 +347,7 @@ async function checkOidcE2e(): Promise<void> {
               if (
                 stored.success &&
                 stored.data.userId === ownedId &&
+                sessions.rows.some((row) => row.id === stored.data.sessionId) &&
                 stored.data.clientId === clientId &&
                 stored.data.redirectUri === redirectUri
               )
@@ -373,6 +381,12 @@ async function checkOidcE2e(): Promise<void> {
           1,
           'Owned identity changed before teardown.',
         );
+        await deleteOwnedRefresh(
+          connection,
+          ownedId,
+          sessions.rows.map((row) => row.id),
+          clientRecordId ? [clientRecordId] : [],
+        );
         await connection.query('DELETE FROM sessions WHERE user_id = $1', [
           ownedId,
         ]);
@@ -400,6 +414,8 @@ async function checkOidcE2e(): Promise<void> {
     await redis.connect();
     phase = 'registry preconditions';
     const registryMetadata = await db.query<{
+      id: string;
+      refresh_token_ttl: number;
       client_type: string;
       enabled: boolean;
       access_token_audience: string | null;
@@ -409,7 +425,7 @@ async function checkOidcE2e(): Promise<void> {
       oidc_scopes_allowed: boolean;
     }>(
       `
-      SELECT c.client_type, c.enabled, c.access_token_audience, c.access_token_ttl,
+      SELECT c.id, c.refresh_token_ttl, c.client_type, c.enabled, c.access_token_audience, c.access_token_ttl,
         c.client_secret_hash IS NULL AS no_secret,
         EXISTS(SELECT 1 FROM client_redirect_uris r WHERE r.client_id=c.id AND r.redirect_uri=$2) AS redirect_registered,
         (SELECT COUNT(DISTINCT s.name) FROM client_scopes cs JOIN scopes s ON s.id=cs.scope_id WHERE cs.client_id=c.id AND s.name IN ('openid','profile','email')) = 3 AS oidc_scopes_allowed
@@ -417,6 +433,7 @@ async function checkOidcE2e(): Promise<void> {
       [clientId, redirectUri],
     );
     const student = registryMetadata.rows[0];
+    clientRecordId = student?.id;
     assert.ok(
       registryMetadata.rows.length === 1 &&
         student.client_type === 'PUBLIC' &&
@@ -598,6 +615,7 @@ async function checkOidcE2e(): Promise<void> {
       );
       assert.ok(
         stored.userId === userId &&
+          stored.sessionId === sessionId &&
           stored.clientId === clientId &&
           stored.redirectUri === redirectUri &&
           JSON.stringify(stored.grantedScopes) ===
@@ -654,13 +672,22 @@ async function checkOidcE2e(): Promise<void> {
           expires_in: z.literal(student.access_token_ttl),
           scope: z.literal('openid profile email'),
           id_token: z.string().min(1),
+          refresh_token: z.string().min(1),
         })
         .safeParse(await token.json());
       assert.ok(
         tokenResult.success,
-        'OIDC exchange must return exactly five token fields, no refresh token.',
+        'OIDC exchange must return exactly six token fields including initial refresh token.',
       );
       const tokens = tokenResult.data;
+      const refreshExpected = {
+        userId,
+        clientId: student.id,
+        sessionId,
+        scopes: ['openid', 'profile', 'email'],
+        ttlSeconds: student.refresh_token_ttl,
+      };
+      await verifyInitialRefresh(db, tokens.refresh_token, refreshExpected);
       const identity = await validateIdentity(tokens.id_token, nonce, clientId);
       assert.ok(
         identity.sub === userId &&
@@ -794,6 +821,7 @@ async function checkOidcE2e(): Promise<void> {
       assert.equal(replay.headers.get('pragma'), 'no-cache');
       assert.equal(replay.headers.get('location'), null);
       assert.equal(replay.headers.get('set-cookie'), null);
+      await verifyInitialRefresh(db, tokens.refresh_token, refreshExpected);
       assert.equal(
         await redis.exists(codeKey),
         0,
@@ -830,7 +858,7 @@ async function checkOidcE2e(): Promise<void> {
       // Boolean assertions never dump rows, hashes, cookies, codes or JWTs on failure.
       assert.ok(
         (await snapshotDb()) === dbBefore,
-        'Eight database fingerprints must be restored, including the full canonical registry and unrelated identities/sessions.',
+        'Ten database fingerprints must be restored, including refresh families/tokens, full canonical registry and unrelated identities/sessions.',
       );
       assert.ok(
         sameRedis(redisBefore, await snapshotRedis()),
@@ -839,10 +867,10 @@ async function checkOidcE2e(): Promise<void> {
       phase = flowPhase;
     }
     console.log(
-      'M7.6 real-stack OIDC E2E passed: PUBLIC student-spa/openid profile email; register -> authorize 401 -> login/session -> identical authorize 302/state -> S256 token 200 with five fields -> live Discovery/JWKS RS256 issuer/client-audience/nonce validation -> access-token UserInfo with matching subject -> replay invalid_grant.',
+      'M7.6/M8.4 real-stack OIDC E2E passed: PUBLIC student-spa/openid profile email; register -> authorize 401 -> login/session -> identical authorize 302/state -> S256 token 200 with six fields -> live Discovery/JWKS RS256 issuer/client-audience/nonce validation -> access-token UserInfo with matching subject -> replay invalid_grant; initial refresh binding/hash-only storage/TTL verified.',
     );
     console.log(
-      'Wrong expected nonce and wrong ID-token resource audience rejected by client checks; ID Token has exactly six claims. Owned logout/FK-ordered teardown, eight DB fingerprints, unrelated Redis values/absolute expiry and public signing-key snapshot passed; no PEM reads, refresh token, registry mutations or sensitive values printed.',
+      'Wrong nonce and ID-token resource audience rejected; ID Token has six unchanged claims. Owned logout/FK-ordered teardown, ten DB fingerprints, unrelated Redis values/expiry and public signing-key snapshot passed; no PEM reads, registry mutations or sensitive values printed.',
     );
   } finally {
     if (redis.isOpen) redis.destroy();

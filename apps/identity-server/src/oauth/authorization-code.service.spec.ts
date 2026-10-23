@@ -41,6 +41,7 @@ describe('AuthorizationCodeService M5.5 issue-only capability', () => {
   const input: AuthorizationCodeInput = {
     clientId: 'student-spa',
     userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+    sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
     redirectUri: 'http://localhost:3200/call%62ack?b=2&a=1',
     grantedScopes: ['profile', 'openid', 'email'],
     codeChallenge: 'A'.repeat(42) + '_',
@@ -100,7 +101,7 @@ describe('AuthorizationCodeService M5.5 issue-only capability', () => {
     expect(reserve.mock.calls[0][0] !== reserve.mock.calls[1][0]).toBe(true);
     expect(generate).toHaveBeenCalledTimes(2);
   });
-  it('serializes exactly eight fields in deterministic order, preserving all exact protocol values', async () => {
+  it('serializes exactly nine fields including trusted sessionId, preserving exact protocol values', async () => {
     const exact = {
       ...input,
       clientId: ' exact\u00e9 ',
@@ -117,6 +118,7 @@ describe('AuthorizationCodeService M5.5 issue-only capability', () => {
     ).toEqual([
       'clientId',
       'userId',
+      'sessionId',
       'redirectUri',
       'grantedScopes',
       'codeChallenge',
@@ -166,6 +168,8 @@ describe('AuthorizationCodeService M5.5 issue-only capability', () => {
     { rawCode: 'never-store' },
     { state: 'never-store' },
     { sessionId: 'never-store' },
+    { sessionId: undefined },
+    { sessionId: null },
   ])(
     'rejects malformed/extra state before randomness or Redis (%#)',
     async (variation) => {

@@ -49,7 +49,7 @@ describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
     validate.mockResolvedValue(validated);
     issue.mockResolvedValue({ code: 'transient-test-code' });
     authenticate.mockResolvedValue({
-      sessionId: 'trusted-session',
+      sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
       userId: state.userId,
       authTime: 1,
       mfaLevel: 'password',
@@ -67,7 +67,7 @@ describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
       ...validated,
       authorizationCode: 'transient-test-code',
       session: {
-        sessionId: 'trusted-session',
+        sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
         userId: 'trusted-user',
         authTime: 1,
         mfaLevel: 'password',
@@ -84,6 +84,7 @@ describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       clientId: 'student-spa',
       userId: 'trusted-user',
+      sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
       redirectUri: validated.request.redirect_uri,
       grantedScopes: validated.grantedScopes,
       codeChallenge: null,
@@ -131,7 +132,7 @@ describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
     expect((error as Error).stack).not.toContain('private');
     expect(issue).not.toHaveBeenCalled();
   });
-  it('preserves validated grants/PKCE/nonce and trusted authTime without copying state/sessionId', async () => {
+  it('preserves grants/PKCE/nonce and captures the same trusted sessionId/authTime, never query authority', async () => {
     const request = {
       ...validated.request,
       client_id: 'untrusted-re-read',
@@ -147,6 +148,7 @@ describe('AuthorizationService M5.4/M5.5 ordering and trusted context', () => {
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       clientId: validated.client.clientId,
       userId: 'trusted-user',
+      sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
       redirectUri: request.redirect_uri,
       grantedScopes: ['profile', 'openid', 'email'],
       codeChallenge: request.code_challenge,

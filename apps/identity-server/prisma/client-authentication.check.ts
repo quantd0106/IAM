@@ -9,6 +9,7 @@ import { validateEnvironment } from '../src/config/env.schema.js';
 import { authorizationCodeStateSchema } from '../src/oauth/authorization-code.state.js';
 import { buildRedisKey } from '../src/redis/redis-key.js';
 import { accessTokenVerifier } from './access-token.check-support.js';
+import { ownedRefreshIdentity } from './refresh-token.check-support.js';
 
 const invalidClient = {
   error: 'invalid_client',
@@ -78,6 +79,7 @@ async function checkClientAuthentication(): Promise<void> {
   const [student, banking, admin, disabled, noHash, opaque] = clients;
   assert.ok(student && banking && admin && disabled && noHash && opaque);
   const created = new Set<string>();
+  const identity = ownedRefreshIdentity(db, 'm64');
   const ownedKeys = new Set<string>();
   let cases = 0;
   let verifyToken: Awaited<ReturnType<typeof accessTokenVerifier>>;
@@ -97,6 +99,8 @@ async function checkClientAuthentication(): Promise<void> {
       ['scopes', 'id'],
       ['client_scopes', 'client_id, scope_id'],
       ['_prisma_migrations', 'id'],
+      ['refresh_token_families', 'id'],
+      ['refresh_tokens', 'id'],
     ];
     return JSON.stringify(
       (
@@ -159,11 +163,12 @@ async function checkClientAuthentication(): Promise<void> {
       redirect_uri: 'http://localhost/m64-owned-callback',
       code_verifier: verifier,
     };
-    const subject = randomUUID();
+    const subject = identity.userId;
     const value = JSON.stringify(
       authorizationCodeStateSchema.parse({
         clientId,
         userId: subject,
+        sessionId: identity.sessionId,
         redirectUri: body.redirect_uri,
         // OAuth-only fixture: OIDC response/nonce policy is verified by M7.6.
         grantedScopes: ['profile'],
@@ -245,6 +250,7 @@ async function checkClientAuthentication(): Promise<void> {
     await redis.connect();
     const beforeDb = await snapshotDb();
     const beforeCodes = await snapshotCodes();
+    await identity.create();
     for (const client of clients) {
       await db.query(
         'INSERT INTO clients (id, client_id, name, client_type, enabled, client_secret_hash, access_token_audience, access_token_ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
@@ -349,12 +355,14 @@ async function checkClientAuthentication(): Promise<void> {
       basic(admin.clientId),
       200,
     );
+    await identity.clearRefresh(clients.map((client) => client.id));
     assert.ok(
       (await snapshotDb()) === fixtureDb,
       'Runtime changed database/credential fingerprints.',
     );
     for (const key of ownedKeys)
       assert.equal(await redis.exists(key), 0, 'Owned code remains.');
+    await identity.cleanup(clients.map((client) => client.id));
     await cleanupClients();
     assert.ok(
       (await snapshotDb()) === beforeDb,
@@ -365,7 +373,7 @@ async function checkClientAuthentication(): Promise<void> {
       'Unrelated code state changed.',
     );
     console.log(
-      `M6.4 client authentication check passed (${cases} HTTP cases): PUBLIC/Banking/Admin/opaque Basic success; wrong/missing/malformed/unsupported/mismatch/unknown/disabled/PUBLIC Basic retain code+expiry and valid retry succeeds; PKCE still burns; signed JWTs verified with explicit audience/per-client TTL; null challenge still requires confidential auth; 8 DB fingerprints restored, unrelated codes unchanged, owned fixtures removed. No secrets printed or canonical seed changed.`,
+      `M6.4 client authentication check passed (${cases} HTTP cases): PUBLIC/Banking/Admin/opaque Basic success; invalid authentication retains code+expiry and valid retry succeeds; PKCE burns; signed JWT/five-field responses verified; null challenge requires confidential auth; 10 DB fingerprints restored, unrelated codes unchanged, owned refresh/identity/client fixtures removed. No secrets printed or canonical seed changed.`,
     );
   } finally {
     try {
@@ -373,6 +381,7 @@ async function checkClientAuthentication(): Promise<void> {
     } finally {
       if (redis.isOpen) redis.destroy();
       try {
+        await identity.cleanup(clients.map((client) => client.id));
         await cleanupClients();
       } finally {
         await db.end();

@@ -199,6 +199,7 @@ describe('IdTokenIssuerService internal RS256/JWKS capability', () => {
   it('demonstrates explicit userId/clientId/nonce mapping from validated grant state without coupling the builder to it', async () => {
     const state = authorizationCodeStateSchema.parse({
       userId: input.subject,
+      sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
       clientId: 'student-spa',
       redirectUri: 'http://localhost:3200/callback',
       grantedScopes: ['openid'],

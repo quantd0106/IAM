@@ -368,6 +368,7 @@ describe('GET /oauth/authorize (M5.1 HTTP boundary + real M4.6 lookup)', () => {
     expect(stored).toEqual({
       clientId: valid.client_id,
       userId: currentUser,
+      sessionId: currentId,
       redirectUri: valid.redirect_uri,
       grantedScopes: ['openid', 'profile', 'email'],
       codeChallenge: valid.code_challenge,

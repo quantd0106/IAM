@@ -29,6 +29,7 @@ import { IdpSessionStateService } from '../session/idp-session-state.service.js'
 import { RegisterValidationFilter } from '../auth/register-validation.filter.js';
 import { SigningKeyService } from '../security/signing/signing-key.service.js';
 import { AccessTokenClaimsService } from '../tokens/access-token-claims.service.js';
+import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
 import { generateKeyPair, jwtVerify, type CryptoKey } from 'jose';
 
 vi.mock('argon2', async (original) => {
@@ -84,6 +85,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       clientSecretHash: string | null;
       accessTokenAudience: string | null;
       accessTokenTtl: number;
+      refreshTokenTtl: number;
     }
   >();
   const findUnique = vi.fn();
@@ -107,6 +109,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       JSON.stringify({
         clientId,
         userId: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
+        sessionId: 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3',
         redirectUri: body.redirect_uri,
         // Keep this client-authentication regression OAuth-only; M7.6 tests OIDC separately.
         grantedScopes: ['profile'],
@@ -144,14 +147,17 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
         expires_in: number;
         scope: string;
         token_type: string;
+        refresh_token: string;
       };
       expect(Object.keys(response.body as object).sort()).toEqual([
         'access_token',
         'expires_in',
+        'refresh_token',
         'scope',
         'token_type',
       ]);
       expect(token.token_type).toBe('Bearer');
+      expect(token.refresh_token === 'A'.repeat(43)).toBe(true);
       expect(response.headers['content-type']).toMatch(/^application\/json/);
       const { payload, protectedHeader } = await jwtVerify(
         token.access_token,
@@ -221,6 +227,10 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       .useValue({ issueSecret: unexpected })
       .overrideProvider(SigningKeyService)
       .useValue({ getPrivateSigningKey, getKeyId })
+      .overrideProvider(RefreshTokenIssuerService)
+      .useValue({
+        issueInitial: () => Promise.resolve({ refreshToken: 'A'.repeat(43) }),
+      })
       .overrideProvider(IdpSessionStateService)
       .useValue({ touch: unexpected })
       .overrideProvider(AuthorizationService)
@@ -264,6 +274,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
             : clientId === 'banking-web'
               ? 321
               : 600,
+        refreshTokenTtl: 2592000,
       });
     findUnique.mockImplementation(
       ({ where }: { where: { clientId: string } }) =>
@@ -445,6 +456,17 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       Infinity,
       Number.MAX_SAFE_INTEGER + 1,
     ].map((accessTokenTtl) => ({ accessTokenTtl })),
+    ...[
+      undefined,
+      null,
+      0,
+      -1,
+      1.5,
+      '600',
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER,
+    ].map((refreshTokenTtl) => ({ refreshTokenTtl })),
   ])(
     'invalid issuance metadata %# fails before hashing/GETDEL; valid retry succeeds',
     async (change) => {

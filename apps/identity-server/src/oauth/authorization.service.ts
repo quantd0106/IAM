@@ -47,6 +47,7 @@ export class AuthorizationService {
       const { code } = await this.codes.issue({
         clientId: validated.client.clientId,
         userId: session.userId,
+        sessionId: session.sessionId,
         redirectUri: validated.request.redirect_uri,
         grantedScopes: validated.grantedScopes,
         codeChallenge: validated.request.code_challenge ?? null,

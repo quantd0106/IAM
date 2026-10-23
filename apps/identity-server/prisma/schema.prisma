@@ -89,6 +89,7 @@ model RefreshTokenFamily {
   reuseDetectedAt DateTime?                @map("reuse_detected_at")
   revokedAt       DateTime?                @map("revoked_at")
   createdAt       DateTime                 @default(now()) @map("created_at")
+  grantedScopes   String[]                 @default([]) @map("granted_scopes")
 
   user    User           @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client  Client         @relation(fields: [clientId], references: [id], onDelete: Restrict, onUpdate: Cascade)

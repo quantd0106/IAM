@@ -112,8 +112,14 @@ async function checkFamilies(): Promise<void> {
             nullable: 'NO',
             defaultValue: 'CURRENT_TIMESTAMP',
           },
+          {
+            name: 'granted_scopes',
+            type: '_text',
+            nullable: 'YES',
+            defaultValue: 'ARRAY[]::text[]',
+          },
         ]),
-      'Family must expose exactly the eight intended columns/defaults.',
+      'Family must expose exactly the nine intended M8.4 columns/defaults.',
     );
     const enums = await prisma.$queryRaw<{ label: string }[]>`
       SELECT e.enumlabel::text AS label FROM pg_enum e
@@ -187,6 +193,7 @@ async function checkFamilies(): Promise<void> {
           assert.deepEqual(Object.keys(first).sort(), [
             'clientId',
             'createdAt',
+            'grantedScopes',
             'id',
             'reuseDetectedAt',
             'revokedAt',
@@ -198,6 +205,7 @@ async function checkFamilies(): Promise<void> {
             first.status === RefreshTokenFamilyStatus.ACTIVE &&
               first.reuseDetectedAt === null &&
               first.revokedAt === null &&
+              JSON.stringify(first.grantedScopes) === '[]' &&
               first.createdAt instanceof Date &&
               Number.isFinite(first.createdAt.getTime()),
           );
@@ -318,7 +326,7 @@ async function checkFamilies(): Promise<void> {
     }
   }
   console.log(
-    'M8.1 family persistence check passed: exact eight fields/enum/defaults/UUID PK/three nonunique FK-status indexes; three required restrictive FKs and parent back-relations; duplicate bindings allowed, nonexistent references and parent deletes rejected. Owned fixtures rolled back; ten table fingerprints unchanged; no runtime refresh behavior or sensitive values printed.',
+    'M8.1/M8.4 family persistence check passed: exact nine fields including granted_scopes empty-array compatibility default; enum/UUID PK/three nonunique FK-status indexes; three required restrictive FKs and parent back-relations; duplicate bindings allowed, nonexistent references and parent deletes rejected. Owned fixtures rolled back; ten table fingerprints unchanged; no sensitive values printed.',
   );
 }
 

@@ -99,6 +99,8 @@ async function checkTokenRequests(): Promise<void> {
       ['scopes', 'id'],
       ['client_scopes', 'client_id, scope_id'],
       ['_prisma_migrations', 'id'],
+      ['refresh_token_families', 'id'],
+      ['refresh_tokens', 'id'],
     ];
     const query =
       tables
@@ -147,6 +149,7 @@ async function checkTokenRequests(): Promise<void> {
         JSON.stringify({
           clientId: 'student-spa',
           userId: randomUUID(),
+          sessionId: randomUUID(),
           redirectUri: 'http://localhost:3200/callback',
           grantedScopes: ['openid', 'profile'],
           codeChallenge: 'A'.repeat(43),
@@ -282,7 +285,7 @@ async function checkTokenRequests(): Promise<void> {
       'Probe did not restore its owned sentinel.',
     );
     console.log(
-      `M6.1-M6.4 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; enabled PUBLIC unknown codes return invalid_grant; unknown client returns invalid_client; code snapshots and 8 database fingerprints unchanged; owned sentinel removed.`,
+      `M6.1-M6.4 token request check passed (${cases} HTTP cases); rejected forms/unsupported grants preserve the matching sentinel; enabled PUBLIC unknown codes return invalid_grant; unknown client returns invalid_client; code snapshots and 10 database fingerprints unchanged; owned sentinel removed.`,
     );
   } finally {
     try {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { importSPKI, jwtVerify } from 'jose';
 import type { Environment } from '../src/config/env.schema.js';
+import { requireOpaqueRefreshToken } from './refresh-token.check-support.js';
 
 export async function accessTokenVerifier(env: Environment) {
   const publicKey = await importSPKI(
@@ -18,7 +19,7 @@ export async function accessTokenVerifier(env: Environment) {
       ttlSeconds: number;
       scopes: readonly string[];
     },
-  ): Promise<void> => {
+  ): Promise<{ refreshToken: string }> => {
     assert.equal(response.status, 200, 'Token success must be HTTP 200.');
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('pragma'), 'no-cache');
@@ -31,7 +32,13 @@ export async function accessTokenVerifier(env: Environment) {
     const body = JSON.parse(text) as Record<string, unknown>;
     assert.ok(
       JSON.stringify(Object.keys(body).sort()) ===
-        JSON.stringify(['access_token', 'expires_in', 'scope', 'token_type']),
+        JSON.stringify([
+          'access_token',
+          'expires_in',
+          'refresh_token',
+          'scope',
+          'token_type',
+        ]),
       'Unexpected token response fields.',
     );
     assert.ok(
@@ -84,5 +91,6 @@ export async function accessTokenVerifier(env: Environment) {
         JSON.stringify(payload.permissions) === '[]',
       'Invalid JWT claim values.',
     );
+    return { refreshToken: requireOpaqueRefreshToken(body.refresh_token) };
   };
 }

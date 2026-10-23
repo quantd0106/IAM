@@ -21,6 +21,9 @@ import {
 import { AccessTokenIssuerService } from './access-token-issuer.service.js';
 import { TokensModule } from './tokens.module.js';
 import { RefreshTokenGeneratorService } from './refresh-token-generator.service.js';
+import { RefreshTokenIssuerService } from './refresh-token-issuer.service.js';
+import { PrismaModule } from '../prisma/prisma.module.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 
 const input: AccessTokenClaimsInput = {
   subject: 'c0e21e3f-d3ee-425c-a99f-c2e7a7cab53f',
@@ -170,16 +173,19 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
     expect(Reflect.getMetadata('imports', TokensModule) as unknown).toEqual([
       ConfigModule,
       SigningKeyModule,
+      PrismaModule,
     ]);
     expect(Reflect.getMetadata('providers', TokensModule) as unknown).toEqual([
       AccessTokenClaimsService,
       AccessTokenIssuerService,
       RefreshTokenGeneratorService,
+      RefreshTokenIssuerService,
     ]);
     expect(Reflect.getMetadata('exports', TokensModule) as unknown).toEqual([
       AccessTokenClaimsService,
       AccessTokenIssuerService,
       RefreshTokenGeneratorService,
+      RefreshTokenIssuerService,
     ]);
     expect(
       (Reflect.getMetadata('controllers', TokensModule) as unknown) ?? [],
@@ -192,11 +198,14 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
       'generate',
     );
     const hash = vi.spyOn(RefreshTokenGeneratorService.prototype, 'hash');
+    const transaction = vi.fn();
     const module = await Test.createTestingModule({ imports: [TokensModule] })
       .overrideProvider(ConfigService)
       .useValue(new ConfigService({}))
       .overrideProvider(SigningKeyService)
       .useValue({ getPrivateSigningKey, getKeyId })
+      .overrideProvider(PrismaService)
+      .useValue({ $transaction: transaction })
       .compile();
     try {
       for (const log of logs) log.mockClear();
@@ -210,6 +219,10 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
       );
       expect(generate).not.toHaveBeenCalled();
       expect(hash).not.toHaveBeenCalled();
+      expect(module.get(RefreshTokenIssuerService)).toBeInstanceOf(
+        RefreshTokenIssuerService,
+      );
+      expect(transaction).not.toHaveBeenCalled();
     } finally {
       await module.close();
     }
