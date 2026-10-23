@@ -6,7 +6,7 @@ import { RefreshTokenGeneratorService } from './refresh-token-generator.service.
 import { SigningKeyModule } from '../security/signing/signing-key.module.js';
 import { PrismaModule } from '../prisma/prisma.module.js';
 import { RefreshTokenIssuerService } from './refresh-token-issuer.service.js';
-import { RefreshTokenGrantService } from './refresh-token-grant.service.js';
+import { RefreshTokenRotationService } from './refresh-token-rotation.service.js';
 
 @Module({
   imports: [ConfigModule, SigningKeyModule, PrismaModule],
@@ -15,14 +15,14 @@ import { RefreshTokenGrantService } from './refresh-token-grant.service.js';
     AccessTokenIssuerService,
     RefreshTokenGeneratorService,
     RefreshTokenIssuerService,
-    RefreshTokenGrantService,
+    RefreshTokenRotationService,
   ],
   exports: [
     AccessTokenClaimsService,
     AccessTokenIssuerService,
     RefreshTokenGeneratorService,
     RefreshTokenIssuerService,
-    RefreshTokenGrantService,
+    RefreshTokenRotationService,
   ],
 })
 export class TokensModule {}

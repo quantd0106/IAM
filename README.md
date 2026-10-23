@@ -268,8 +268,8 @@ POST /oidc/userinfo
 
 ## 7. Refresh Token Rotation
 
-Đây là final policy. Exception tạm thời CHỈ ở M8.5 (mục 42) hết hiệu lực khi
-M8.6 được triển khai; không đổi policy chung thành reusable refresh token vĩnh viễn.
+M8.6 đã triển khai mandatory atomic rotation; exception reusable M8.5 đã hết hiệu lực.
+Reuse revocation/session/audit bên dưới là final policy của M8.7, chưa triển khai.
 
 Rotation:
 
@@ -543,6 +543,9 @@ Một task chỉ được coi là hoàn thành khi:
 ## 18. Current Status
 
 **Architecture baseline: frozen.**
+
+Hiện đã có M8.6: refresh thành công consume RT1 và tạo RT2 trong cùng transaction;
+concurrent cùng RT1 chỉ một request thành công. M8.7 reuse revocation còn pending.
 
 Current phase:
 
@@ -1124,7 +1127,8 @@ Tám fields baseline và field thứ chín grantedScopes (M8.4) ở implementati
 
 M8.1 chưa tạo individual token; M8.2 bên dưới thêm persistence model riêng.
 Family không có token/hash/expiry; M8.4 thêm scope snapshot và initial issuance.
-Rotation/reuse/revocation chưa có. M8.4 mở rộng responses, giữ Discovery/JWKS/UserInfo.
+M8.6 hiện có rotation (mục 43); reuse response/revocation còn pending.
+M8.4 mở rộng responses, giữ Discovery/JWKS/UserInfo.
 Seed runner không đổi và không tạo family rows; Client.refreshTokenTtl giữ nguyên.
 
 Migration được apply explicit, không chạy khi startup/seed:
@@ -1173,7 +1177,8 @@ one child, nhiều NULL roots, FK và delete restrictions; fingerprint mười b
 giữ nguyên. Fixture tokenHash chỉ là text kiểm persistence, không phải token thật.
 Seed runner không đổi, không seed family/token. M8.2 không tự generate/hash;
 M8.3 thêm material capability; M8.4 nối initial issuance/HTTP response (mục 41).
-Rotation/reuse/revocation chưa có; M8.5 thêm refresh_token vào Discovery (mục 42).
+M8.6 hiện có rotation (mục 43); reuse response/revocation còn pending.
+M8.5 thêm refresh_token vào Discovery (mục 42).
 
 ## 40. Internal opaque refresh-token material (M8.3)
 
@@ -1224,7 +1229,8 @@ lost commit/response không được retry hoặc restore code.
 OAuth success đúng `access_token, token_type, expires_in, scope, refresh_token`;
 OIDC auth-code thêm `id_token` (sáu fields), giữ claims/headers cũ. M8.5 thêm nhánh
 refresh grant riêng bên dưới; initial issuance M8.4 giữ nguyên.
-Không rotation/consume/reuse/revocation; M8.6+ chưa triển khai.
+Initial issuer không rotate token; M8.6 cung cấp rotation riêng ở mục 43.
+Reuse response/revocation M8.7+ chưa triển khai.
 
 Ngoài checks ở mục 37–39, chạy `pnpm --filter identity-server refresh-token-issuance:check`.
 Probe gọi real issuer/DB, kiểm binding/scope/root/TTL/hash-only, unique/FK failure
@@ -1233,13 +1239,12 @@ chỉ dữ liệu có ownership đã chứng minh: RefreshToken -> RefreshTokenF
 Session/Credential/User/client, kể cả lost reply/assertion failure; mười database
 fingerprints và unrelated Redis phải trở về baseline. Không sửa seed hoặc signing keys.
 
-## 42. Read-only refresh grant — intermediate M8.5 only
+## 42. Refresh grant boundary (M8.5; read-only exception đã hết hiệu lực)
 
-M8.5 là exception tạm thời đã được phê duyệt: RT1 hợp lệ vẫn ACTIVE và reusable
-để establish/verify refresh grant. Final policy vẫn mandatory rotation và exception
-HẾT HIỆU LỰC khi M8.6 được triển khai: mỗi refresh thành công phải consume token cũ
-và issue replacement. PUBLIC-client refresh security chưa production-complete;
-không claim OAuth Security BCP replay protection. M8.7 mới thêm reuse response.
+M8.5 từng cho reusable RT1 để verify refresh grant. Exception đã HẾT HIỆU LỰC
+khi M8.6 được triển khai: mỗi refresh thành công consume token cũ và tạo replacement
+atomic (mục 43). M8.7 mới thêm reuse revocation/session/audit; chưa claim complete
+refresh replay protection.
 
 `POST /oauth/token`, form body strict union:
 
@@ -1252,7 +1257,8 @@ Cross-grant/unknown/repeated/structured fields bị reject. Client authenticatio
 giữ nguyên PUBLIC/no Authorization và CONFIDENTIAL/exact client_secret_basic binding.
 Thứ tự refresh: shape -> client auth -> access audience/TTL config -> validate/hash/
 unique lookup -> binding/status/expiry/family scopes -> optional narrowing -> access
-issuer -> response. Không dùng GETDEL, PKCE, nonce, ID/initial refresh issuers.
+issuer -> response; từ M8.6 lookup/validation/signing/consume/create nằm cùng rotation
+transaction. Không dùng GETDEL, PKCE, nonce, ID/initial refresh issuers.
 
 Credential nonempty scalar phải đúng 43 ký tự `[A-Za-z0-9_-]`; malformed -> invalid_grant.
 Hash exact UTF-8 raw string bằng generator M8.3, lookup unique SHA-256 tokenHash một
@@ -1267,20 +1273,63 @@ mọi scope thuộc original grant; giữ requested order. Sai syntax/escalation
 Narrowing không đổi scope snapshot trên family.
 
 Access token dùng family.userId, current client resource audience/access TTL, effective
-scopes và roles=[]/permissions=[]; RS256/eight claims giữ nguyên. Refresh success chỉ
-`access_token, token_type, expires_in, scope` — không ID Token hoặc replacement refresh
-token, kể cả openid. Auth-code success vẫn năm/sáu fields của M8.4. Headers không đổi.
+scopes và roles=[]/permissions=[]; RS256/eight claims giữ nguyên. Refresh success có
+đúng `access_token, token_type, expires_in, scope, refresh_token` (raw replacement),
+không ID Token kể cả openid. Auth-code success vẫn năm/sáu fields của M8.4.
+Headers không đổi.
 
 Refresh failures: 400 invalid_grant / Invalid refresh token.; 400 invalid_scope /
 Invalid refresh scope.; auth 401 và internal 500 giữ nguyên sanitized contracts.
 Không User/Session status/expiry hoặc Redis introspection, không thay logout policy.
-Refresh validation read-only: không consume RT1, RT2, expiry extension, audit, reuse
-hoặc revocation. Lookup KHÔNG phải concurrency authority: M8.6 phải re-check token/
-family trong atomic PostgreSQL transaction, không tin stale validation result.
+Standalone read-only validator đã được thay bằng rotation transaction; không tin
+stale validation result. Không expiry extension, audit hoặc reuse revocation.
 
 Discovery giờ advertise `[authorization_code, refresh_token]`, đúng thứ tự; metadata
 khác không đổi. Chạy `pnpm --filter identity-server refresh-token-grant:check` cùng
 M8 persistence và OAuth/OIDC checks ở mục trước. Probe dùng real initial issuer,
-HTTP và live JWKS, kiểm repeated use/narrowing/wrong client/expiry/confidential auth,
-no RT2 và mười fingerprints không đổi sau mỗi request. Finally cleanup chỉ owned
+HTTP và live JWKS, kiểm replacement/narrowing/wrong client/expiry/confidential auth.
+Success chỉ đổi token lineage, failure giữ mười fingerprints. Finally cleanup chỉ owned
 fixtures theo FK order. Không schema/migration, seed hoặc dependency change.
+
+## 43. Atomic refresh-token rotation (M8.6)
+
+`OAuthController -> RefreshTokenRotationService.rotate(...)` sau shape/client auth/
+access config. Service chỉ phụ thuộc Prisma, M8.3 generator và access issuer hiện có.
+Trong một PostgreSQL ReadCommitted interactive transaction: lookup/revalidate RT1
+và family -> resolve scopes -> generate RT2 -> ký access token -> conditional consume
+RT1 -> create RT2 -> commit -> trả cả hai credentials. Không có read-only authority
+song song; client auth luôn trước hash/lookup. Không đổi Discovery hoặc auth-code flow.
+
+Consume dùng `updateMany` với id/familyId/ACTIVE/null consumedAt/null revokedAt/
+expiresAt > rotationAt; phải count=1. Count=0 -> fixed invalid_grant, không child hay
+credentials. Unique parentTokenId là defense-in-depth. Concurrent cùng RT1: đúng
+một 200, một 400 invalid_grant, RT1 CONSUMED và đúng một ACTIVE child trong cùng family.
+
+RT2.parentTokenId=RT1.id, issuedAt=RT1.consumedAt=cùng rotationAt;
+**RT2.expiresAt=RT1.expiresAt**. RT2 -> RT3 vẫn giữ cùng absolute horizon, không sliding
+TTL/now+refreshTokenTtl. Narrowing chỉ ảnh hưởng access scopes, không đổi family grant;
+refresh RT2 bỏ scope lại dùng original snapshot. Không query/touch/revoke Session/Redis,
+đổi family status/scopes/ownership/reuse metadata hoặc ghi audit.
+
+Refresh response đúng 5 fields ở mục 42, không id_token/IDs/hash/refresh expiry.
+Raw RT2 chỉ được trả SAU commit, DB chỉ lưu SHA-256 hash. Signing/generator/insert/
+transaction lỗi -> fixed server_error, không partial response; consume rollback khi
+child insert lỗi. Consumed RT1 replay -> fixed invalid_grant, family và child vẫn
+ACTIVE, session unchanged; family/session revocation/audit chờ M8.7.
+
+Commit là credential replacement boundary. Nếu HTTP response bị mất sau commit,
+client có thể mất raw RT2; MVP chấp nhận trade-off này. Không restore RT1, tự retry
+rotation, lưu raw RT2 để retrieve hoặc quay lại reusable. Không schema/migration mới.
+
+Chạy trên quiet local stack có signing keys hiện tại:
+
+```bash
+pnpm --filter identity-server refresh-token-grant:check
+pnpm --filter identity-server refresh-token-rotation:check
+```
+
+Rotation probe kiểm real M8.4 issuance, RT1 -> RT2 -> RT3, replay, inherited expiry,
+hai HTTP request thật đồng thời (`Promise.all`) chỉ một winner, raw winner hash-match
+stored child, signing/generator/unique-insert rollback. Finally chỉ xóa fixtures đã
+chứng minh ownership và restore đủ mười DB fingerprints; không in secrets/hash/IDs.
+M8.7+ chưa triển khai, task state vẫn theo TASKS.md.

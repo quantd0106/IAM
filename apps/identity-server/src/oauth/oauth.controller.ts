@@ -38,9 +38,9 @@ import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
 import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
 import { requireRefreshTokenIssuance } from '../tokens/refresh-token-issuance.policy.js';
 import {
-  RefreshTokenGrantService,
-  type RefreshTokenGrantResult,
-} from '../tokens/refresh-token-grant.service.js';
+  RefreshTokenRotationService,
+  type RefreshTokenRotationResult,
+} from '../tokens/refresh-token-rotation.service.js';
 import type { RefreshTokenRequest } from './token-request.schema.js';
 
 @Controller('oauth')
@@ -61,8 +61,8 @@ export class OAuthController {
     private readonly idTokens: IdTokenIssuerService,
     @Inject(RefreshTokenIssuerService)
     private readonly refreshTokens: RefreshTokenIssuerService,
-    @Inject(RefreshTokenGrantService)
-    private readonly refreshGrants: RefreshTokenGrantService,
+    @Inject(RefreshTokenRotationService)
+    private readonly refreshRotation: RefreshTokenRotationService,
   ) {}
 
   @Post('token')
@@ -216,15 +216,18 @@ export class OAuthController {
     token_type: 'Bearer';
     expires_in: number;
     scope: string;
+    refresh_token: string;
   }> {
     let issuance: ReturnType<typeof requireAccessTokenIssuance>;
-    let grant: RefreshTokenGrantResult;
+    let grant: RefreshTokenRotationResult;
     try {
       issuance = requireAccessTokenIssuance(client);
-      grant = await this.refreshGrants.validate({
+      grant = await this.refreshRotation.rotate({
         rawRefreshToken: request.refresh_token,
         clientRecordId: client.id,
         requestedScope: request.scope,
+        accessTokenAudience: issuance.audience,
+        accessTokenTtl: issuance.ttlSeconds,
       });
     } catch {
       throw new HttpException(
@@ -243,28 +246,14 @@ export class OAuthController {
         },
         HttpStatus.BAD_REQUEST,
       );
-    try {
-      const token = await this.tokens.issue({
-        subject: grant.subject,
-        audience: issuance.audience,
-        scopes: grant.scopes,
-        ttlSeconds: issuance.ttlSeconds,
-        roles: [],
-        permissions: [],
-      });
-      // No ID issuer or initial/rotated refresh issuer in the M8.5 branch.
-      return {
-        access_token: token.accessToken,
-        token_type: 'Bearer',
-        expires_in: token.expiresIn,
-        scope: token.scope,
-      };
-    } catch {
-      throw new HttpException(
-        { error: 'server_error', error_description: 'Token request failed.' },
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+    // The service returns credentials only after the rotation transaction commits.
+    return {
+      access_token: grant.accessToken,
+      token_type: grant.tokenType,
+      expires_in: grant.expiresIn,
+      scope: grant.scope,
+      refresh_token: grant.refreshToken,
+    };
   }
 
   @Get('authorize')

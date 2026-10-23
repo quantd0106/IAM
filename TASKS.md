@@ -870,7 +870,7 @@ Acceptance criteria:
 
 ## M8.6 — Atomic rotation transaction
 
-Status: [ ]
+Status: [x]
 
 Operation:
 

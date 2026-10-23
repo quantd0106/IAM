@@ -1,4 +1,4 @@
-// Explicit local real-stack M8.5 probe, not rotation/reuse enforcement.
+// Refresh-grant surface regression; successes now rotate under M8.6.
 import 'reflect-metadata';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
@@ -13,6 +13,7 @@ import { RefreshTokenGeneratorService } from '../src/tokens/refresh-token-genera
 import { RefreshTokenIssuerService } from '../src/tokens/refresh-token-issuer.service.js';
 import {
   ownedRefreshIdentity,
+  requireOpaqueRefreshToken,
   verifyInitialRefresh,
 } from './refresh-token.check-support.js';
 
@@ -79,7 +80,7 @@ async function checkRefreshGrant(): Promise<void> {
       credentials: 'omit',
       signal: AbortSignal.timeout(10000),
     });
-  const snapshot = async (): Promise<string> => {
+  const snapshot = async (includeTokens = true): Promise<string> => {
     const tables = [
       'users',
       'credentials',
@@ -96,6 +97,7 @@ async function checkRefreshGrant(): Promise<void> {
       (
         await db.query(
           tables
+            .filter((table) => includeTokens || table !== 'refresh_tokens')
             .map(
               (table) =>
                 `SELECT '${table}' AS relation, COUNT(*)::int AS count, md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY ${table === 'client_scopes' ? 'client_id, scope_id' : 'id'})::text, '[]')) AS fingerprint FROM ${table} t`,
@@ -180,7 +182,13 @@ async function checkRefreshGrant(): Promise<void> {
         authorization?: string,
         error?: string,
       ) => {
-        const unchanged = await snapshot();
+        const unchanged = await snapshot(status !== 200);
+        const predecessor =
+          status === 200
+            ? await prisma.refreshToken.findUniqueOrThrow({
+                where: { tokenHash: generator.hash(raw) },
+              })
+            : undefined;
         const response = await http('/oauth/token', {
           method: 'POST',
           headers: {
@@ -220,8 +228,8 @@ async function checkRefreshGrant(): Promise<void> {
         if (status === 200) {
           assert.ok(
             JSON.stringify(Object.keys(body).sort()) ===
-              '["access_token","expires_in","scope","token_type"]',
-            'Refresh must have exactly four fields; no ID/replacement refresh credential.',
+              '["access_token","expires_in","refresh_token","scope","token_type"]',
+            'Refresh must have exactly five fields with replacement credential and no ID Token.',
           );
           const effective = scope === undefined ? scopes : scope.split(' ');
           assert.ok(
@@ -270,6 +278,37 @@ async function checkRefreshGrant(): Promise<void> {
               'Unexpected refresh/UserInfo subject.',
             );
           }
+          const replacement = requireOpaqueRefreshToken(body.refresh_token);
+          const child = await prisma.refreshToken.findUniqueOrThrow({
+            where: { tokenHash: generator.hash(replacement) },
+          });
+          const parent = await prisma.refreshToken.findUniqueOrThrow({
+            where: { id: predecessor!.id },
+          });
+          assert.ok(
+            parent.status === 'CONSUMED' &&
+              parent.consumedAt !== null &&
+              child.status === 'ACTIVE' &&
+              child.familyId === parent.familyId &&
+              child.parentTokenId === parent.id &&
+              child.issuedAt.getTime() === parent.consumedAt.getTime() &&
+              child.expiresAt.getTime() === parent.expiresAt.getTime() &&
+              child.consumedAt === null &&
+              child.revokedAt === null,
+            'Invalid committed rotation state/absolute horizon.',
+          );
+          assert.equal(
+            await prisma.refreshToken.count({
+              where: { parentTokenId: parent.id },
+            }),
+            1,
+            'Expected exactly one child.',
+          );
+          assert.ok(
+            !JSON.stringify([parent, child]).includes(raw) &&
+              !JSON.stringify([parent, child]).includes(replacement),
+            'Raw credential must never be persisted.',
+          );
         } else {
           const description =
             error === 'invalid_client'
@@ -287,26 +326,21 @@ async function checkRefreshGrant(): Promise<void> {
           );
         }
         assert.ok(
-          (await snapshot()) === unchanged,
-          'Refresh request mutated database state (rotation/reuse/revocation must remain absent).',
+          (await snapshot(status !== 200)) === unchanged,
+          'Unexpected mutation: only successful token rotation may change state; family/session/registry stay unchanged.',
         );
         cases++;
+        return status === 200
+          ? requireOpaqueRefreshToken(body.refresh_token)
+          : undefined;
       };
-      phase = 'PUBLIC repeated refresh and scope narrowing';
-      await post(student, initial.refreshToken, 200);
-      await post(student, initial.refreshToken, 200, 'email openid');
-      await post(student, initial.refreshToken, 200);
-      await post(student, initial.refreshToken, 200, 'openid profile email');
-      await verifyInitialRefresh(db, initial.refreshToken, expected);
+      phase = 'PUBLIC replacement refresh and scope narrowing';
+      let current = (await post(student, initial.refreshToken, 200))!;
+      current = (await post(student, current, 200, 'email openid'))!;
+      current = (await post(student, current, 200))!;
+      current = (await post(student, current, 200, 'openid profile email'))!;
       phase = 'wrong authenticated client and invalid scopes';
-      await post(
-        other,
-        initial.refreshToken,
-        400,
-        undefined,
-        undefined,
-        'invalid_grant',
-      );
+      await post(other, current, 400, undefined, undefined, 'invalid_grant');
       for (const scope of [
         '',
         'profile profile',
@@ -314,14 +348,7 @@ async function checkRefreshGrant(): Promise<void> {
         'OpenID',
         'openid  profile',
       ])
-        await post(
-          student,
-          initial.refreshToken,
-          400,
-          scope,
-          undefined,
-          'invalid_scope',
-        );
+        await post(student, current, 400, scope, undefined, 'invalid_scope');
       await post(
         student,
         'A'.repeat(42) + '+',
@@ -340,7 +367,7 @@ async function checkRefreshGrant(): Promise<void> {
       );
       phase = 'owned expired credential';
       const ownedRoot = await prisma.refreshToken.findUniqueOrThrow({
-        where: { tokenHash: generator.hash(initial.refreshToken) },
+        where: { tokenHash: generator.hash(current) },
         select: { id: true, familyId: true },
       });
       const family = await prisma.refreshTokenFamily.findUniqueOrThrow({
@@ -369,11 +396,11 @@ async function checkRefreshGrant(): Promise<void> {
         assert.equal(changed.rowCount, 1, 'Owned scope fixture setup failed.');
       };
       for (const value of [[], ['profile', 'profile'], ['bad scope'], null]) {
-        // Owned negative fixture only; each HTTP request must remain read-only.
+        // Owned negative fixture only; failed HTTP requests must not mutate state.
         await setOwnedScopes(value);
         await post(
           student,
-          initial.refreshToken,
+          current,
           400,
           undefined,
           undefined,
@@ -387,20 +414,13 @@ async function checkRefreshGrant(): Promise<void> {
         where: { id: ownedRoot.id },
         data: { expiresAt: new Date(Date.now() - 1000) },
       });
-      await post(
-        student,
-        initial.refreshToken,
-        400,
-        undefined,
-        undefined,
-        'invalid_grant',
-      );
+      await post(student, current, 400, undefined, undefined, 'invalid_grant');
       assert.equal(
         await prisma.refreshToken.count({
           where: { familyId: ownedRoot.familyId },
         }),
-        1,
-        'RT2 must not exist.',
+        5,
+        'Expiry failure must not create another child.',
       );
       const root = await prisma.refreshToken.findUniqueOrThrow({
         where: { id: ownedRoot.id },
@@ -409,8 +429,8 @@ async function checkRefreshGrant(): Promise<void> {
         root.status === 'ACTIVE' &&
           root.consumedAt === null &&
           root.revokedAt === null &&
-          root.parentTokenId === null,
-        'RT1 must remain unconsumed/parentless, even on expiry failure.',
+          root.parentTokenId !== null,
+        'Expired active child must remain unconsumed on failure.',
       );
       phase = 'CONFIDENTIAL Basic refresh';
       const confidential = await issuer.issueInitial({
@@ -425,6 +445,10 @@ async function checkRefreshGrant(): Promise<void> {
         Buffer.from(
           `${encodeURIComponent(banking.clientId)}:${encodeURIComponent(value)}`,
         ).toString('base64');
+      await verifyInitialRefresh(db, confidential.refreshToken, {
+        ...expected,
+        clientId: banking.id,
+      });
       await post(
         banking,
         confidential.refreshToken,
@@ -448,10 +472,6 @@ async function checkRefreshGrant(): Promise<void> {
         'profile',
         basic(secret),
       );
-      await verifyInitialRefresh(db, confidential.refreshToken, {
-        ...expected,
-        clientId: banking.id,
-      });
     } finally {
       const flowPhase = phase;
       phase = 'strict owned FK cleanup';
@@ -463,10 +483,10 @@ async function checkRefreshGrant(): Promise<void> {
       phase = flowPhase;
     }
     console.log(
-      `M8.5 real refresh grant passed (${cases} HTTP cases): real M8.4 RT1; PUBLIC/repeated/narrowed and confidential Basic access issuance; live-JWKS RS256/exact eight claims/resource audience/access TTL; wrong client/unknown/malformed/expired grants and invalid scopes rejected safely.`,
+      `Refresh grant regression passed (${cases} HTTP cases): real M8.4 RT1; PUBLIC/replacement/narrowed and confidential Basic issuance; live-JWKS RS256/exact eight claims/resource audience/access TTL; wrong client/unknown/malformed/expired grants and invalid scopes rejected safely.`,
     );
     console.log(
-      'Each refresh left all ten DB fingerprints unchanged; RT1 ACTIVE/parentless, no consumedAt, RT2, ID/replacement refresh token or expiry extension. Strict owned FK cleanup restored baseline; no credentials/hashes/identifiers printed. M8.6 rotation remains mandatory before production completeness.',
+      'Each success consumed its predecessor and returned one ACTIVE child with inherited expiry; family/session/registry unchanged. Every failure left all ten fingerprints unchanged. Strict owned FK cleanup restored baseline; no credentials/hashes/identifiers printed; no M8.7 reuse response.',
     );
   } finally {
     await prisma.$disconnect();

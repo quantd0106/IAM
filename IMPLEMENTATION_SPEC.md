@@ -411,7 +411,8 @@ Discovery's exact metadata/scopes remain unchanged, without claims_supported.
 The internal M7.3 ID Token remains exactly iss/sub/aud/iat/exp/nonce; profile/email
 are supplied only through UserInfo. M7.5 did not change token issuance; M7.6 below
 conditionally adds id_token to the four M6.7 access-token fields for exact openid
-grants. M8.4 additionally returns an initial refresh_token; M8.5 adds its read-only refresh grant.
+grants. M8.4 additionally returns an initial refresh_token; M8.5 adds the refresh grant,
+now requiring atomic rotation in M8.6 (section 12).
 
 ---
 
@@ -962,7 +963,8 @@ accessToken, expiresIn=claims.exp-claims.iat and scope=claims.scope.
 M6.7 introduced the four access fields: access_token, token_type='Bearer',
 expires_in and scope. Current HTTP 200 application/json additionally includes
 M8.4 refresh_token and, for exact openid authorization-code grants, M7.6 id_token.
-M8.5 refresh grants return only the original four access fields. Set Cache-Control:
+M8.6 refresh grants return those four access fields plus replacement refresh_token,
+without id_token. Set Cache-Control:
 no-store and Pragma: no-cache, without Location/Set-Cookie.
 Claims/key/signing/internal failures after consumption return the same sanitized
 500; code stays permanently burned, with no restoration/retry write. A retry of
@@ -1120,7 +1122,7 @@ cleanup, ten database fingerprints (including M8.4 refresh state) and unrelated 
 snapshots. Compare published JWKS before/after; no key writes, canonical registry
 changes, seed, flush or sensitive output. M8.4 also verifies initial refresh binding,
 hash-only persistence and lifetime. A separate M8.5 check tests refresh grants;
-rotation remains absent until M8.6.
+M8.6 now rotates every successful refresh as described in section 12.
 
 ---
 
@@ -1219,8 +1221,8 @@ tables. Fixed probe messages never print hashes, identifiers or private errors.
 
 M8.2 itself was persistence only, with no runtime/HTTP change. M8.3 below adds
 material-only generation/hashing; M8.4 integrates initial issuance and five/six-field
-responses. M8.5 adds refresh_token to Discovery. Consumption,
-rotation, reuse detection and revocation remain future work.
+responses. M8.5 adds refresh_token to Discovery, and M8.6 now adds consumption/
+rotation (section 12); reuse detection and revocation remain M8.7+ work.
 
 ### M8.3 opaque refresh-token material capability
 
@@ -1264,19 +1266,20 @@ guard against persistence/I/O dependencies and eager generation.
 
 M8.3 remains material-only. The separate M8.4 issuer below creates family/token rows
 and returns the initial refresh token through five/six-field OAuth/OIDC responses.
-The M8.5 grant below reuses this unchanged material capability; rotation/reuse/
-revocation remain future work.
+The M8.5 grant and M8.6 rotation reuse this unchanged material capability;
+reuse revocation remains future M8.7 work.
 
 ### M8.4 initial refresh-token issuance
 
 Every successful authorization_code exchange issues one initial refresh token.
-M8.4 itself did not accept refresh grants; M8.5 adds the separate read-only branch.
+M8.4 itself did not accept refresh grants; M8.5 added a separate read-only branch,
+replaced by the atomic M8.6 rotation boundary in section 12.
 M8.4 supersedes the historical M6/M7
 four/five-field staging: OAuth success has exactly access_token/token_type/
 expires_in/scope/refresh_token; OIDC has those five plus id_token. No refresh expiry,
 family/token IDs or hashes are returned. Existing no-store/no-cache and absence of
 Set-Cookie/Location stay unchanged. M8.5 now advertises authorization_code and
-refresh_token; rotation/reuse/revocation remain M8.6+ work.
+refresh_token; M8.6 now rotates, while reuse revocation remains M8.7+ work.
 
 AuthorizationCodeState now requires UUID sessionId, captured from the SAME
 authenticated IdP session as userId at /authorize and stored unchanged. No request
@@ -1339,20 +1342,16 @@ cleanup proves user/session/client ownership and removes refresh records before
 FK-restricted parents, including lost response/assertion failure paths. Seed checks
 remain rollback-only and never populate refresh state.
 
-### M8.5 read-only refresh grant and temporary staging exception
+### M8.5 historical read-only staging — superseded by M8.6
 
-M8.5 is an intermediate milestone. Refresh-token reuse is temporarily permitted
-only to establish and verify the refresh grant. Mandatory rotation remains the
-final project policy and MUST be restored in M8.6, where each successful refresh
-consumes the presented token and issues a replacement token.
+The temporary M8.5 reusable behavior EXPIRED when M8.6 was implemented. It is no
+longer an active exception in AGENTS.md. Every successful refresh now consumes the
+presented token and issues a replacement atomically under section 12. M8.7 reuse
+revocation/session/audit remains pending; do not claim complete replay protection.
 
-This narrow exception expires when M8.6 is implemented. RT1 remains ACTIVE and
-reusable in M8.5 only; no consumedAt/status/expiry/family/session/audit mutation,
-RT2 creation, parent linkage or replacement refresh credential is allowed. Reusable
-bearer refresh tokens are NOT the final PUBLIC-client security model. Do not claim
-OAuth Security BCP refresh replay protection: M8.6 must add mandatory rotation,
-then M8.7 adds consumed-token reuse detection/revocation. Section 12 remains the
-final project policy, not behavior implemented by this intermediate milestone.
+The following describes ONLY the historical M8.5 staging behavior, not current
+runtime authority. Request shape, client authentication and scope rules survive;
+the read-only service, four-field response and repeated-use semantics do not.
 
 POST /oauth/token accepts only form bodies, dispatched by a nonempty scalar
 grant_type BEFORE grant-specific strict parsing. Missing/type/structured grant_type
@@ -1426,9 +1425,10 @@ trust a stale M8.5 read. No row lock/CAS/consume machinery is added in M8.5.
 
 Discovery now advertises grants [authorization_code, refresh_token], in that order;
 all other metadata stays unchanged. The explicit local refresh-token-grant:check
-uses real M8.4 initial issuance and HTTP refresh with owned fixtures, verifies JWT,
-scope narrowing, wrong-client/expiry failures and repeated read-only use, and
-proves RT1/family/full database fingerprints unchanged with no RT2. Finally remove
+originally used real M8.4 initial issuance and HTTP refresh with owned fixtures,
+JWT/scope/binding/expiry checks and repeated read-only use. M8.6 replaces those
+stale success assertions with committed rotations; failures still leave all ten
+fingerprints unchanged, while success preserves family/session/registry. Finally remove
 only proven owned RefreshToken -> Family -> Session/User/Client fixtures and restore
 all ten fingerprints; never print raw credentials, hashes, IDs or private errors.
 
@@ -1441,14 +1441,100 @@ TTL:
 ```
 
 Initial issuance uses the normalized M8.2 layout and M8.3 hash contract above.
-Never persist raw refresh token. M8.5 usage is read-only; rotation is M8.6 work.
+Never persist raw refresh token. M8.6 rotation preserves this initial absolute
+expiration horizon for every descendant; it does not renew the 30-day lifetime.
 
 ---
 
 ## 12. Refresh Token Rotation
 
-Final policy below; the explicitly approved M8.5-only exception in section 11
-temporarily defers rotation and expires as soon as M8.6 is implemented.
+The M8.5 staging exception has expired. M8.6 implements mandatory atomic rotation
+on every successful refresh; M8.7 adds the final reuse security response below.
+
+### M8.6 atomic rotation authority
+
+OAuthController preserves shape -> unchanged ClientAuthenticationService ->
+requireAccessTokenIssuance(client) -> RefreshTokenRotationService.rotate(input).
+No refresh hashing/lookup occurs before successful client authentication; no extra
+registry lookup or refresh TTL validation is introduced. The old read-only
+RefreshTokenGrantService is removed from runtime and replaced, not trusted as a
+preflight snapshot. Discovery remains [authorization_code, refresh_token].
+
+The rotation service depends ONLY on PrismaService, the unchanged M8.3 generator
+and unchanged AccessTokenIssuerService. Input is rawRefreshToken, internal
+clientRecordId, optional requestedScope, accessTokenAudience and accessTokenTtl.
+Validate the exact 43-character [A-Za-z0-9_-] credential without trim, normalization
+or decoding; hash the exact UTF-8 string. Malformed/unknown credentials are
+invalid_grant. Persist only hashes and required metadata, never raw credentials.
+Never log credentials, hashes, access tokens or IDs at this boundary.
+
+ONE Prisma interactive PostgreSQL ReadCommitted transaction performs:
+
+1. Unique tokenHash lookup INSIDE the transaction, selecting only RT id/familyId/
+   status/expiresAt/consumedAt/revokedAt and family id/userId/clientId/status/
+   grantedScopes/reuseDetectedAt/revokedAt. No User, Credential, Session, Client
+   secret, registry scopes, RBAC or Redis lookup.
+2. Revalidate exact internal client binding; RT ACTIVE with null consumedAt and
+   revokedAt and expiresAt > one safe nonnegative Date.now() rotation instant;
+   family ACTIVE with null reuseDetectedAt/revokedAt. Malformed driver types,
+   invalid Date/UUID/clock are operational failures, never repaired.
+3. Validate nonempty unique canonical family scope snapshot ([]/NULL/malformed ->
+   invalid_grant). Optional single-SP unique requested scope must be an exact
+   subset or invalid_scope without mutation. Preserve stored/requested order.
+   Narrowing affects ACCESS scopes only; never rewrite family.grantedScopes.
+4. Generate independent RT2 using M8.3, then issue access token INSIDE the callback
+   BEFORE commit: subject=family.userId, authenticated resource audience/access
+   TTL, effective scopes, roles=[] and permissions=[]. RS256/eight claims unchanged.
+5. Conditional updateMany matches RT1.id, expected familyId, status ACTIVE,
+   consumedAt=null, revokedAt=null and expiresAt > rotationAt; set CONSUMED and
+   consumedAt=rotationAt. Require count===1. Count 0 is invalid_grant with no child
+   and no credential delivery; other/unexpected results are internal failures.
+6. Create exactly one ACTIVE child in the SAME family with parentTokenId=RT1.id,
+   tokenHash only, issuedAt=rotationAt, expiresAt=RT1.expiresAt and null consumedAt/
+   revokedAt. Commit, then and ONLY then return access token and raw RT2.
+
+Conditional consume is the primary double-spend authority; unique parentTokenId
+is defense-in-depth. Competing writers re-evaluate the consume predicate after
+the winner commits: exactly one concurrent RT1 request succeeds, the other gets
+fixed invalid_grant; only one child/two total family tokens exist. The loser may
+have transient signed material but must never return/log/persist/blacklist it.
+
+Every descendant inherits the predecessor's absolute expiresAt unchanged:
+RT1 -> RT2 -> RT3 never slides lifetime, never uses now+refreshTokenTtl and never
+changes Client.refreshTokenTtl. The same rotationAt supplies consumedAt/issuedAt.
+Family ownership, scopes, status and lifecycle metadata remain unchanged; Session
+is never touched/extended/revoked. No audit or reuseDetectedAt update in M8.6.
+
+Unknown/expired/wrong-client/inconsistent/revoked/already-CONSUMED RT -> fixed
+400 invalid_grant / Invalid refresh token. Scope failure -> fixed 400 invalid_scope
+/ Invalid refresh scope. Consumed-token replay leaves family ACTIVE, RT2 ACTIVE
+and Session unchanged; M8.7 alone adds revocation/audit. Unexpected signing,
+generator, Prisma, FK/hash/parent uniqueness or transaction/commit failure rolls
+back and maps to fixed 500 server_error / Token request failed., without native
+cause or partial credentials. Internal error is Refresh token rotation failed.
+There is no automatic retry. Signing/generation failure leaves RT1 ACTIVE; child
+insert failure rolls back consumption. Auth failures retain existing 401 contract.
+
+Refresh HTTP success has EXACTLY access_token, token_type='Bearer', expires_in,
+scope and replacement refresh_token, even for openid. No id_token, RT1, hashes,
+IDs or refresh expiry metadata. Preserve no-store/no-cache and no Set-Cookie or
+Location. Authorization-code initial issuance stays unchanged (OAuth five fields,
+OIDC six), as do Discovery/JWKS/UserInfo/access claims.
+
+Database commit is the credential replacement boundary. If the HTTP response is
+lost AFTER commit, RT1 is consumed and the client may not possess raw RT2. The
+thesis MVP accepts this trade-off: never restore RT1, retry rotation automatically,
+store raw RT2 for recovery or make RT1 reusable again. M8.7 remains fail-closed.
+
+The refresh-token-grant:check surface regression now follows replacement tokens,
+checks PUBLIC/CONFIDENTIAL authentication, scopes and failures. New focused
+refresh-token-rotation:check uses real M8.4 issuance, PostgreSQL and simultaneous
+HTTP requests via Promise.all; verifies RT1/RT2/RT3, absolute horizon, one winner,
+hash-only persisted child, replay without revocation and real failure rollback.
+Both use proven owned fixtures/finally FK cleanup and restore all ten fingerprints.
+No Prisma schema/migration, audit model, revocation endpoint or M8.7+ work is added.
+
+### Final rotation and reuse policy
 
 For every successful refresh:
 
@@ -1464,7 +1550,7 @@ Required property:
 Only one concurrent request may successfully consume RT1.
 ```
 
-If an already-consumed refresh token is presented:
+Final M8.7 policy (NOT implemented by M8.6): if an already-consumed refresh token is presented:
 
 ```text
 1. detect reuse

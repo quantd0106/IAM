@@ -114,18 +114,6 @@ Refresh token:
 - old-token consumption and new-token creation must be atomic
 - token reuse revokes the family and related session
 
-Temporary exception — M8.5 only:
-
-M8.5 is an intermediate milestone. Refresh-token reuse is temporarily permitted
-only to establish and verify the refresh grant. Mandatory rotation remains the
-final project policy and MUST be restored in M8.6, where each successful refresh
-consumes the presented token and issues a replacement token.
-
-This exception expires when M8.6 is implemented. During M8.5 validation is read-only:
-RT1 remains ACTIVE, consumedAt is unchanged, and no RT2/replacement credential is
-created or returned. This is not production-complete public-client replay protection.
-M8.7 owns reuse detection; do not implement rotation/reuse/revocation ahead of scope.
-
 Never manually implement cryptographic primitives.
 
 ## 7. Password / MFA Rules

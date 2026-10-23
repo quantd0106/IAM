@@ -33,6 +33,7 @@ const studentId = 'b2b2dbea-bc3a-42f4-8eae-2de818a4f2ea';
 const bankId = 'd4d7b5ef-d0a0-4c59-9fc4-70dd7773a9f3';
 const issuerUrl = 'https://iam.example.test';
 const raw = 'A'.repeat(43);
+const rawHash = new RefreshTokenGeneratorService().hash(raw);
 const secret = ' synthetic exact e\u0301 +%2F: secret ';
 const input = {
   grant_type: 'refresh_token',
@@ -65,7 +66,7 @@ const basic = (id = 'banking-web', value = secret) =>
     `${encodeURIComponent(id)}:${encodeURIComponent(value)}`,
   ).toString('base64');
 
-describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotation', () => {
+describe('M8.6 HTTP dispatch: real client auth/hash/rotation/access RS256', () => {
   let app: INestApplication<Server>;
   let privateKey: CryptoKey;
   let publicKey: CryptoKey;
@@ -80,6 +81,10 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
   });
   const clientLookup = vi.fn();
   const tokenLookup = vi.fn();
+  const transaction = vi.fn();
+  const consume = vi.fn();
+  const create = vi.fn();
+  let children: Map<string, ReturnType<typeof fixture>>;
   type Client = {
     id: string;
     clientId: string;
@@ -92,11 +97,14 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
   };
   const clients = new Map<string, Client>();
   const fixture = () => ({
+    id: 'e3c4a6be-e817-4a5a-a11a-298393b85243',
+    familyId: 'a83b0df9-40eb-4a32-8e9c-5e5b12a731cf',
     status: 'ACTIVE',
     expiresAt: new Date(Date.now() + 120000),
     consumedAt: null as Date | null,
     revokedAt: null as Date | null,
     family: {
+      id: 'a83b0df9-40eb-4a32-8e9c-5e5b12a731cf',
       userId: subject,
       clientId: studentId,
       status: 'ACTIVE',
@@ -127,7 +135,7 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
       .useValue({
         client: { findUnique: clientLookup },
         refreshToken: {
-          findUnique: tokenLookup,
+          findUnique: forbidden,
           create: forbidden,
           update: forbidden,
           updateMany: forbidden,
@@ -139,7 +147,7 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
         },
         user: { findUnique: forbidden },
         session: { findFirst: forbidden },
-        $transaction: forbidden,
+        $transaction: transaction,
       })
       .overrideProvider(RedisService)
       .useValue({
@@ -187,6 +195,73 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
   beforeEach(() => {
     vi.clearAllMocks();
     row = fixture();
+    children = new Map();
+    transaction.mockImplementation(
+      async (operation: (tx: unknown) => Promise<unknown>) => {
+        order.push('transaction');
+        const before = structuredClone(row);
+        const savedChildren = structuredClone(children);
+        try {
+          const result = await operation({
+            refreshToken: {
+              findUnique: tokenLookup,
+              updateMany: consume,
+              create,
+            },
+          });
+          order.push('commit');
+          return result;
+        } catch (error) {
+          row = before;
+          children = savedChildren;
+          throw error;
+        }
+      },
+    );
+    consume.mockImplementation(
+      ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: { status: string; consumedAt: Date };
+      }) => {
+        order.push('consume');
+        const token = [row, ...children.values()].find(
+          (value) => value.id === where.id,
+        );
+        if (!token || token.status !== 'ACTIVE')
+          return Promise.resolve({ count: 0 });
+        Object.assign(token, data);
+        return Promise.resolve({ count: 1 });
+      },
+    );
+    create.mockImplementation(
+      ({
+        data,
+      }: {
+        data: {
+          tokenHash: string;
+          familyId: string;
+          parentTokenId: string;
+          status: string;
+          issuedAt: Date;
+          expiresAt: Date;
+          consumedAt: null;
+          revokedAt: null;
+        };
+      }) => {
+        order.push('child');
+        const id = '9676ec69-42ab-4a20-a6f3-9866a7e9f4b6';
+        children.set(data.tokenHash, {
+          ...fixture(),
+          ...data,
+          id,
+          family: structuredClone(row.family),
+        });
+        return Promise.resolve({ id });
+      },
+    );
     order.length = 0;
     clients.clear();
     clients.set('student-spa', {
@@ -215,10 +290,16 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
         return Promise.resolve(clients.get(where.clientId) ?? null);
       },
     );
-    tokenLookup.mockImplementation(() => {
-      order.push('lookup');
-      return Promise.resolve(row);
-    });
+    tokenLookup.mockImplementation(
+      ({ where }: { where: { tokenHash: string } }) => {
+        order.push('lookup');
+        return Promise.resolve(
+          where.tokenHash === rawHash
+            ? row
+            : (children.get(where.tokenHash) ?? null),
+        );
+      },
+    );
     hash = vi.spyOn(app.get(RefreshTokenGeneratorService), 'hash');
     access = vi
       .spyOn(app.get(AccessTokenIssuerService), 'issue')
@@ -271,7 +352,7 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
       operation.set('Authorization', authorization);
     const response = await operation.expect(status);
     checkHeaders(response.headers);
-    expect(JSON.stringify(row) === before).toBe(true);
+    if (status !== 200) expect(JSON.stringify(row) === before).toBe(true);
     for (const sensitive of [raw, secret, secretHash])
       expect(response.text.includes(sensitive)).toBe(false);
     if (status !== 200)
@@ -291,12 +372,18 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
     expect(Object.keys(tokens).sort()).toEqual([
       'access_token',
       'expires_in',
+      'refresh_token',
       'scope',
       'token_type',
     ]);
     expect(tokens.token_type).toBe('Bearer');
     expect(tokens.expires_in).toBe(ttl);
     expect(tokens.scope).toBe(scopes.join(' '));
+    expect(
+      typeof tokens.refresh_token === 'string' &&
+        /^[A-Za-z0-9_-]{43}$/.test(tokens.refresh_token),
+    ).toBe(true);
+    expect(tokens.refresh_token !== raw).toBe(true);
     expect(typeof tokens.access_token === 'string').toBe(true);
     const { payload, protectedHeader } = await jwtVerify(
       tokens.access_token as string,
@@ -322,7 +409,7 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
     expect(payload.permissions).toEqual([]);
   };
   it.each([undefined, 'profile', 'email openid', 'openid profile email'])(
-    'issues exact four-field PUBLIC response with verified snapshot/narrowed claims %#',
+    'issues exact five-field PUBLIC response with verified snapshot/narrowed claims %#',
     async (scope) => {
       const scopes =
         scope === undefined ? ['openid', 'profile', 'email'] : scope.split(' ');
@@ -331,8 +418,16 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
         200,
       );
       await verify(response.body, 'student-api', 123, scopes);
-      expect(order).toEqual(['client', 'lookup', 'access']);
-      expect(hash).toHaveBeenCalledOnce();
+      expect(order).toEqual([
+        'client',
+        'transaction',
+        'lookup',
+        'access',
+        'consume',
+        'child',
+        'commit',
+      ]);
+      expect(hash).toHaveBeenCalledTimes(2);
       expect(hash.mock.calls[0][0] === raw).toBe(true);
       expect(access).toHaveBeenCalledExactlyOnceWith({
         subject,
@@ -342,6 +437,11 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
         roles: [],
         permissions: [],
       });
+      expect(row.status).toBe('CONSUMED');
+      expect(row.consumedAt).toBeInstanceOf(Date);
+      expect(children.size).toBe(1);
+      expect(row.family.status).toBe('ACTIVE');
+      expect(row.family.grantedScopes).toEqual(['openid', 'profile', 'email']);
     },
   );
   it('authenticates confidential Basic, binds internal UUID and uses its resource audience/access TTL', async () => {
@@ -377,6 +477,7 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
     expect(hash).not.toHaveBeenCalled();
     expect(tokenLookup).not.toHaveBeenCalled();
     expect(access).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
   it.each([
     'absent',
@@ -447,7 +548,19 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
       expect(access).not.toHaveBeenCalled();
     },
   );
-  it.each(['client-db', 'audience', 'ttl', 'hash', 'lookup', 'date', 'issuer'])(
+  it.each([
+    'client-db',
+    'audience',
+    'ttl',
+    'hash',
+    'lookup',
+    'date',
+    'issuer',
+    'generator',
+    'consume',
+    'child',
+    'transaction',
+  ])(
     'sanitizes %s/config/driver failure with no credential or DB mutation',
     async (stage) => {
       const native = new Error('private-refresh/hash/scopes/DB-canary', {
@@ -464,23 +577,48 @@ describe('M8.5 HTTP dispatch: real client auth/hash/grant/access RS256, no rotat
       if (stage === 'lookup') tokenLookup.mockRejectedValueOnce(native);
       if (stage === 'date') row.expiresAt = new Date(NaN);
       if (stage === 'issuer') access.mockRejectedValueOnce(native);
+      if (stage === 'generator')
+        vi.spyOn(
+          app.get(RefreshTokenGeneratorService),
+          'generate',
+        ).mockImplementationOnce(() => {
+          throw native;
+        });
+      if (stage === 'consume') consume.mockRejectedValueOnce(native);
+      if (stage === 'child') create.mockRejectedValueOnce(native);
+      if (stage === 'transaction') transaction.mockRejectedValueOnce(native);
       const response = await post(input, 500);
       expect(response.body as unknown).toEqual(serverError);
       expect(response.text.includes('canary')).toBe(false);
       if (['client-db', 'audience', 'ttl', 'hash'].includes(stage))
         expect(tokenLookup).not.toHaveBeenCalled();
+      expect(children.size).toBe(0);
     },
   );
-  it('allows repeated M8.5 use while RT1/family remain unchanged; never invokes code/ID/refresh issuers', async () => {
-    const before = JSON.stringify(row);
-    for (let i = 0; i < 2; i++)
-      await verify((await post(input, 200)).body, 'student-api', 123, [
-        'openid',
-        'profile',
-        'email',
-      ]);
+  it('rejects RT1 replay, then rotates RT2 to RT3 without shrinking family scopes or expiry', async () => {
+    const family = structuredClone(row.family);
+    const expiry = row.expiresAt;
+    const first = (await post({ ...input, scope: 'profile' }, 200)).body as {
+      refresh_token: string;
+    };
+    expect((await post(input, 400)).body as unknown).toEqual(invalidGrant);
+    const second = (
+      await post({ ...input, refresh_token: first.refresh_token }, 200)
+    ).body as { refresh_token: string };
+    await verify(second, 'student-api', 123, ['openid', 'profile', 'email']);
+    expect(second.refresh_token !== first.refresh_token).toBe(true);
+    expect(children.size).toBe(2);
+    for (const child of children.values())
+      expect(child.expiresAt).toEqual(expiry);
+    expect(row.family).toEqual(family);
     expect(access).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(row) === before).toBe(true);
+  });
+  it('returns fixed invalid_grant and no replacement on conditional consume loss', async () => {
+    consume.mockResolvedValueOnce({ count: 0 });
+    expect((await post(input, 400)).body as unknown).toEqual(invalidGrant);
+    expect(access).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
+    expect(children.size).toBe(0);
   });
   it.each([
     'code=x',
