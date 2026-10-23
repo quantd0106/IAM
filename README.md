@@ -268,6 +268,9 @@ POST /oidc/userinfo
 
 ## 7. Refresh Token Rotation
 
+Đây là final policy. Exception tạm thời CHỈ ở M8.5 (mục 42) hết hiệu lực khi
+M8.6 được triển khai; không đổi policy chung thành reusable refresh token vĩnh viễn.
+
 Rotation:
 
 ```text
@@ -794,9 +797,10 @@ chỉ xóa code/session keys thuộc probe. Disabled fixture rollback; snapshot 
 `code_verifier` optional, nếu có phải là scalar string, kể cả chuỗi rỗng để M6.3
 phân loại sau consumption. Strict schema
 reject unknown/repeated/structured fields; giữ nguyên decoded values, không trim,
-normalize hay decode lần hai. Chỉ exact `authorization_code` được chấp nhận.
+normalize hay decode lần hai. M8.5 thêm strict refresh_token request branch (mục 42).
 Shape/parser/media-type lỗi trả fixed 400 `invalid_request` / `Invalid token request.`;
-grant khác nhưng đúng shape trả fixed 400 `unsupported_grant_type` / `Unsupported grant type.`.
+Unknown scalar grant được phân loại trước grant-specific schema và trả fixed 400
+`unsupported_grant_type` / `Unsupported grant type.`; known grant sai shape trả invalid_request.
 TokenRequestService vẫn chỉ validate, không I/O. Request hợp lệ qua M6.4 trước M6.2:
 lookup exact body `client_id`, không trim/case-fold/Unicode normalize/fallback.
 PUBLIC Student SPA không cần secret và chỉ đi tiếp khi không gửi Authorization;
@@ -943,9 +947,9 @@ Issuer giữ nguyên validated ISSUER_URL; endpoints dựng bằng URL API với
 Query/fragment/credentials trong issuer bị từ chối bằng safe 500 tại Discovery,
 không silently normalize hoặc thay global validation/M6 behavior.
 
-Advertise đúng openid/profile/email, code/query, authorization_code, public subject,
+Advertise đúng openid/profile/email, code/query, authorization_code + refresh_token (M8.5), public subject,
 RS256, client_secret_basic + none và S256. claims/request/request_uri đều unsupported.
-Không advertise application-specific banking scope hoặc refresh grant.
+Không advertise application-specific banking scope hoặc các grant khác.
 Chi tiết exact allowlist/issuer-path behavior nằm trong implementation spec mục 4.
 
 JWKS URL đã live trong M7.2 (mục 34); UserInfo hiện yêu cầu Bearer token (mục 36),
@@ -1169,7 +1173,7 @@ one child, nhiều NULL roots, FK và delete restrictions; fingerprint mười b
 giữ nguyên. Fixture tokenHash chỉ là text kiểm persistence, không phải token thật.
 Seed runner không đổi, không seed family/token. M8.2 không tự generate/hash;
 M8.3 thêm material capability; M8.4 nối initial issuance/HTTP response (mục 41).
-Rotation/reuse/revocation chưa có; Discovery vẫn chỉ advertise authorization_code.
+Rotation/reuse/revocation chưa có; M8.5 thêm refresh_token vào Discovery (mục 42).
 
 ## 40. Internal opaque refresh-token material (M8.3)
 
@@ -1185,7 +1189,7 @@ không tạo family/token rows, tính expiry hoặc collision lookup/retry. Khô
 schema/migration, AuthorizationCodeService hay PasswordService. Unit tests kiểm tra
 format, 256 mẫu distinct, abc known vector, opaque inputs và sanitized crypto faults;
 không cần check command trùng lặp. M8.4 nối persistence/initial issuance bên dưới;
-generator M8.3 giữ nguyên. Discovery vẫn không advertise refresh_token grant.
+generator M8.3 giữ nguyên. M8.5 thêm refresh_token grant vào Discovery (mục 42).
 
 ## 41. Initial refresh-token issuance (M8.4)
 
@@ -1218,9 +1222,9 @@ code vẫn consumed, retry invalid_grant. Không có distributed transaction Red
 lost commit/response không được retry hoặc restore code.
 
 OAuth success đúng `access_token, token_type, expires_in, scope, refresh_token`;
-OIDC thêm `id_token` (sáu fields), giữ claims/headers cũ. Chưa chấp nhận refresh grant:
-`grant_type=refresh_token` vẫn unsupported_grant_type, Discovery chỉ authorization_code.
-Không rotation/consume/reuse/revocation; M8.5+ chưa triển khai.
+OIDC auth-code thêm `id_token` (sáu fields), giữ claims/headers cũ. M8.5 thêm nhánh
+refresh grant riêng bên dưới; initial issuance M8.4 giữ nguyên.
+Không rotation/consume/reuse/revocation; M8.6+ chưa triển khai.
 
 Ngoài checks ở mục 37–39, chạy `pnpm --filter identity-server refresh-token-issuance:check`.
 Probe gọi real issuer/DB, kiểm binding/scope/root/TTL/hash-only, unique/FK failure
@@ -1228,3 +1232,55 @@ rollback và không retry. OAuth/OIDC E2E cũng kiểm persistence mới. Finall
 chỉ dữ liệu có ownership đã chứng minh: RefreshToken -> RefreshTokenFamily ->
 Session/Credential/User/client, kể cả lost reply/assertion failure; mười database
 fingerprints và unrelated Redis phải trở về baseline. Không sửa seed hoặc signing keys.
+
+## 42. Read-only refresh grant — intermediate M8.5 only
+
+M8.5 là exception tạm thời đã được phê duyệt: RT1 hợp lệ vẫn ACTIVE và reusable
+để establish/verify refresh grant. Final policy vẫn mandatory rotation và exception
+HẾT HIỆU LỰC khi M8.6 được triển khai: mỗi refresh thành công phải consume token cũ
+và issue replacement. PUBLIC-client refresh security chưa production-complete;
+không claim OAuth Security BCP replay protection. M8.7 mới thêm reuse response.
+
+`POST /oauth/token`, form body strict union:
+
+```text
+authorization_code: grant_type, client_id, code, redirect_uri, code_verifier?
+refresh_token:     grant_type, client_id, refresh_token, scope?
+```
+
+Cross-grant/unknown/repeated/structured fields bị reject. Client authentication
+giữ nguyên PUBLIC/no Authorization và CONFIDENTIAL/exact client_secret_basic binding.
+Thứ tự refresh: shape -> client auth -> access audience/TTL config -> validate/hash/
+unique lookup -> binding/status/expiry/family scopes -> optional narrowing -> access
+issuer -> response. Không dùng GETDEL, PKCE, nonce, ID/initial refresh issuers.
+
+Credential nonempty scalar phải đúng 43 ký tự `[A-Za-z0-9_-]`; malformed -> invalid_grant.
+Hash exact UTF-8 raw string bằng generator M8.3, lookup unique SHA-256 tokenHash một
+lần, không trim/decode/normalize hoặc query raw. Family.clientId phải match INTERNAL
+authenticated Client.id. Token ACTIVE, consumed/revoked timestamps null, expiresAt >
+một validation clock; family ACTIVE, revoked/reuse timestamps null. Không repair.
+
+Authority duy nhất là family.grantedScopes: nonempty canonical unique scope tokens,
+giữ case/order; []/NULL/malformed -> invalid_grant, không fallback registry/RBAC.
+Scope bỏ qua -> copy stored order. Có scope -> exact single-SP syntax, không duplicates,
+mọi scope thuộc original grant; giữ requested order. Sai syntax/escalation -> invalid_scope.
+Narrowing không đổi scope snapshot trên family.
+
+Access token dùng family.userId, current client resource audience/access TTL, effective
+scopes và roles=[]/permissions=[]; RS256/eight claims giữ nguyên. Refresh success chỉ
+`access_token, token_type, expires_in, scope` — không ID Token hoặc replacement refresh
+token, kể cả openid. Auth-code success vẫn năm/sáu fields của M8.4. Headers không đổi.
+
+Refresh failures: 400 invalid_grant / Invalid refresh token.; 400 invalid_scope /
+Invalid refresh scope.; auth 401 và internal 500 giữ nguyên sanitized contracts.
+Không User/Session status/expiry hoặc Redis introspection, không thay logout policy.
+Refresh validation read-only: không consume RT1, RT2, expiry extension, audit, reuse
+hoặc revocation. Lookup KHÔNG phải concurrency authority: M8.6 phải re-check token/
+family trong atomic PostgreSQL transaction, không tin stale validation result.
+
+Discovery giờ advertise `[authorization_code, refresh_token]`, đúng thứ tự; metadata
+khác không đổi. Chạy `pnpm --filter identity-server refresh-token-grant:check` cùng
+M8 persistence và OAuth/OIDC checks ở mục trước. Probe dùng real initial issuer,
+HTTP và live JWKS, kiểm repeated use/narrowing/wrong client/expiry/confidential auth,
+no RT2 và mười fingerprints không đổi sau mỗi request. Finally cleanup chỉ owned
+fixtures theo FK order. Không schema/migration, seed hoặc dependency change.

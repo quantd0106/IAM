@@ -452,7 +452,7 @@ describe('POST /oauth/token M6.1 validation + M6.2 consumption + M6.3 PKCE (real
     'authorization-code',
     ' authorization_code',
     'authorization_code ',
-    'refresh_token',
+    'client_credentials',
   ])(
     'rejects well-shaped unsupported grant %j without normalization',
     async (grant_type) => {

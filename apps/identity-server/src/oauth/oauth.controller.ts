@@ -37,6 +37,11 @@ import { requireAccessTokenIssuance } from '../tokens/access-token-issuance.poli
 import { IdTokenIssuerService } from '../oidc/id-token-issuer.service.js';
 import { RefreshTokenIssuerService } from '../tokens/refresh-token-issuer.service.js';
 import { requireRefreshTokenIssuance } from '../tokens/refresh-token-issuance.policy.js';
+import {
+  RefreshTokenGrantService,
+  type RefreshTokenGrantResult,
+} from '../tokens/refresh-token-grant.service.js';
+import type { RefreshTokenRequest } from './token-request.schema.js';
 
 @Controller('oauth')
 export class OAuthController {
@@ -56,6 +61,8 @@ export class OAuthController {
     private readonly idTokens: IdTokenIssuerService,
     @Inject(RefreshTokenIssuerService)
     private readonly refreshTokens: RefreshTokenIssuerService,
+    @Inject(RefreshTokenGrantService)
+    private readonly refreshGrants: RefreshTokenGrantService,
   ) {}
 
   @Post('token')
@@ -73,7 +80,7 @@ export class OAuthController {
     expires_in: number;
     scope: string;
     id_token?: string;
-    refresh_token: string;
+    refresh_token?: string;
   }> {
     let result: TokenRequestResult;
     try {
@@ -121,6 +128,8 @@ export class OAuthController {
         HttpStatus.UNAUTHORIZED,
       );
     }
+    if (result.request.grant_type === 'refresh_token')
+      return this.refresh(result.request, authentication.client);
     let grant: AuthorizationCodeConsumeResult;
     let issuance: ReturnType<typeof requireAccessTokenIssuance>;
     let refreshIssuance: ReturnType<typeof requireRefreshTokenIssuance>;
@@ -190,6 +199,65 @@ export class OAuthController {
         ...tokenResponse,
         ...(idToken === undefined ? {} : { id_token: idToken }),
         refresh_token: refreshToken,
+      };
+    } catch {
+      throw new HttpException(
+        { error: 'server_error', error_description: 'Token request failed.' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  private async refresh(
+    request: RefreshTokenRequest,
+    client: Extract<TokenClientAuthenticationResult, { ok: true }>['client'],
+  ): Promise<{
+    access_token: string;
+    token_type: 'Bearer';
+    expires_in: number;
+    scope: string;
+  }> {
+    let issuance: ReturnType<typeof requireAccessTokenIssuance>;
+    let grant: RefreshTokenGrantResult;
+    try {
+      issuance = requireAccessTokenIssuance(client);
+      grant = await this.refreshGrants.validate({
+        rawRefreshToken: request.refresh_token,
+        clientRecordId: client.id,
+        requestedScope: request.scope,
+      });
+    } catch {
+      throw new HttpException(
+        { error: 'server_error', error_description: 'Token request failed.' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    if (!grant.ok)
+      throw new HttpException(
+        {
+          error: grant.error,
+          error_description:
+            grant.error === 'invalid_scope'
+              ? 'Invalid refresh scope.'
+              : 'Invalid refresh token.',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    try {
+      const token = await this.tokens.issue({
+        subject: grant.subject,
+        audience: issuance.audience,
+        scopes: grant.scopes,
+        ttlSeconds: issuance.ttlSeconds,
+        roles: [],
+        permissions: [],
+      });
+      // No ID issuer or initial/rotated refresh issuer in the M8.5 branch.
+      return {
+        access_token: token.accessToken,
+        token_type: 'Bearer',
+        expires_in: token.expiresIn,
+        scope: token.scope,
       };
     } catch {
       throw new HttpException(

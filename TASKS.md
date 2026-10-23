@@ -860,7 +860,7 @@ Acceptance criteria:
 
 ## M8.5 — `grant_type=refresh_token`
 
-Status: [ ]
+Status: [x]
 
 Acceptance criteria:
 

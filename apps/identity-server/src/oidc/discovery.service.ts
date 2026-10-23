@@ -11,7 +11,7 @@ export type DiscoveryMetadata = {
   scopes_supported: ['openid', 'profile', 'email'];
   response_types_supported: ['code'];
   response_modes_supported: ['query'];
-  grant_types_supported: ['authorization_code'];
+  grant_types_supported: ['authorization_code', 'refresh_token'];
   subject_types_supported: ['public'];
   id_token_signing_alg_values_supported: ['RS256'];
   token_endpoint_auth_methods_supported: ['client_secret_basic', 'none'];
@@ -54,7 +54,7 @@ export class DiscoveryService {
         scopes_supported: ['openid', 'profile', 'email'],
         response_types_supported: ['code'],
         response_modes_supported: ['query'],
-        grant_types_supported: ['authorization_code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
         subject_types_supported: ['public'],
         id_token_signing_alg_values_supported: ['RS256'],
         token_endpoint_auth_methods_supported: ['client_secret_basic', 'none'],

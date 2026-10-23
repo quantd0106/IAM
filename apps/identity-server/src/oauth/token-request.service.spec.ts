@@ -50,14 +50,18 @@ describe('M6.1 strict token request schema / no-I/O service', () => {
     },
   );
 
-  it.each(['client_secret', 'scope', 'state', 'nonce', 'extra'])(
-    'rejects unknown field %s',
-    (field) => {
-      expect(service.validate({ ...valid, [field]: 'canary' }, form)).toEqual(
-        invalid,
-      );
-    },
-  );
+  it.each([
+    'client_secret',
+    'scope',
+    'state',
+    'nonce',
+    'extra',
+    'refresh_token',
+  ])('rejects unknown field %s', (field) => {
+    expect(service.validate({ ...valid, [field]: 'canary' }, form)).toEqual(
+      invalid,
+    );
+  });
 
   it.each([
     'Authorization_Code',
@@ -65,7 +69,7 @@ describe('M6.1 strict token request schema / no-I/O service', () => {
     'authorization-code',
     ' authorization_code',
     'authorization_code ',
-    'refresh_token',
+    'client_credentials',
   ])('dispatches exact grant, rejecting %j', (grant_type) => {
     expect(service.validate({ ...valid, grant_type }, form)).toEqual({
       ok: false,
@@ -73,7 +77,7 @@ describe('M6.1 strict token request schema / no-I/O service', () => {
     });
     expect(
       service.validate({ ...valid, grant_type, code: null }, form),
-    ).toEqual(invalid);
+    ).toEqual({ ok: false, error: 'unsupported_grant_type' });
   });
 
   it('preserves opaque whitespace, Unicode, percent encoding and URI text without policy checks', () => {
@@ -113,5 +117,75 @@ describe('M6.1 strict token request schema / no-I/O service', () => {
         'Application/X-WWW-Form-Urlencoded; charset=UTF-8',
       ),
     ).toEqual({ ok: true, request: valid });
+  });
+  const refresh = {
+    grant_type: 'refresh_token',
+    client_id: 'student-spa',
+    refresh_token: 'A'.repeat(43),
+  };
+  it.each([
+    undefined,
+    '',
+    'profile email',
+    'bad  scope',
+    ' profile',
+    'opaque e\u0301 +%2F',
+  ])(
+    'passes optional scalar scope unchanged for valid-grant classification %#',
+    (scope) => {
+      const input = { ...refresh, ...(scope === undefined ? {} : { scope }) };
+      expect(service.validate(input, form)).toEqual({
+        ok: true,
+        request: input,
+      });
+    },
+  );
+  it.each([
+    'code',
+    'redirect_uri',
+    'code_verifier',
+    'client_secret',
+    'userId',
+    'sessionId',
+    'extra',
+  ])('rejects cross-grant/unknown refresh field %s', (field) => {
+    expect(
+      service.validate({ ...refresh, [field]: 'untrusted' }, form),
+    ).toEqual(invalid);
+  });
+  it.each(Object.keys(refresh))('requires refresh %s', (field) => {
+    const input: Record<string, unknown> = { ...refresh };
+    delete input[field];
+    expect(service.validate(input, form)).toEqual(invalid);
+    expect(service.validate({ ...refresh, [field]: '' }, form)).toEqual(
+      invalid,
+    );
+  });
+  it.each(
+    [...Object.keys(refresh), 'scope'].flatMap((field) =>
+      [null, 1, [], ['a', 'b'], {}].map((value) => ({ field, value })),
+    ),
+  )('rejects structured refresh $field %#', ({ field, value }) => {
+    expect(service.validate({ ...refresh, [field]: value }, form)).toEqual(
+      invalid,
+    );
+  });
+  it('classifies an unknown scalar discriminator before any known-body schema', () => {
+    for (const body of [
+      { grant_type: 'future' },
+      { grant_type: 'future', refresh_token: null },
+      { ...valid, grant_type: 'future', code: null },
+    ])
+      expect(service.validate(body, form)).toEqual({
+        ok: false,
+        error: 'unsupported_grant_type',
+      });
+    expect(service.validate(refresh, 'application/json')).toEqual(invalid);
+    const exact = {
+      ...refresh,
+      client_id: ' exact e\u0301 +%2F ',
+      refresh_token: ' raw +%2F e\u0301 ',
+    };
+    expect(service.validate(exact, form)).toEqual({ ok: true, request: exact });
   });
 });

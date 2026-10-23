@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { z } from 'zod';
 import {
   tokenRequestSchema,
   type TokenRequest,
@@ -7,6 +8,9 @@ import {
 export type TokenRequestResult =
   | { ok: true; request: TokenRequest }
   | { ok: false; error: 'invalid_request' | 'unsupported_grant_type' };
+
+// Inspect only the discriminator before the strict grant-specific boundary.
+const grantSchema = z.object({ grant_type: z.string().min(1) });
 
 @Injectable()
 export class TokenRequestService {
@@ -17,13 +21,17 @@ export class TokenRequestService {
       'application/x-www-form-urlencoded'
     )
       return { ok: false, error: 'invalid_request' };
+    const grant = grantSchema.safeParse(body);
+    if (!grant.success) return { ok: false, error: 'invalid_request' };
+    if (
+      !['authorization_code', 'refresh_token'].includes(grant.data.grant_type)
+    )
+      return { ok: false, error: 'unsupported_grant_type' };
     const input = tokenRequestSchema.safeParse(body);
     if (!input.success) return { ok: false, error: 'invalid_request' };
-    if (input.data.grant_type !== 'authorization_code')
-      return { ok: false, error: 'unsupported_grant_type' };
     return {
       ok: true,
-      request: { ...input.data, grant_type: 'authorization_code' },
+      request: input.data,
     };
   }
 }

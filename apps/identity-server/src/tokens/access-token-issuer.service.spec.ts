@@ -22,6 +22,7 @@ import { AccessTokenIssuerService } from './access-token-issuer.service.js';
 import { TokensModule } from './tokens.module.js';
 import { RefreshTokenGeneratorService } from './refresh-token-generator.service.js';
 import { RefreshTokenIssuerService } from './refresh-token-issuer.service.js';
+import { RefreshTokenGrantService } from './refresh-token-grant.service.js';
 import { PrismaModule } from '../prisma/prisma.module.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
@@ -180,12 +181,14 @@ describe('M6.7 issuer combines unchanged claims + keys through JOSE', () => {
       AccessTokenIssuerService,
       RefreshTokenGeneratorService,
       RefreshTokenIssuerService,
+      RefreshTokenGrantService,
     ]);
     expect(Reflect.getMetadata('exports', TokensModule) as unknown).toEqual([
       AccessTokenClaimsService,
       AccessTokenIssuerService,
       RefreshTokenGeneratorService,
       RefreshTokenIssuerService,
+      RefreshTokenGrantService,
     ]);
     expect(
       (Reflect.getMetadata('controllers', TokensModule) as unknown) ?? [],

@@ -205,7 +205,7 @@ async function checkTokenRequests(): Promise<void> {
       await post(`${missing}&${field}[nested]=object`);
     }
     for (const grant_type of [
-      'refresh_token',
+      'client_credentials',
       'Authorization_Code',
       'AUTHORIZATION_CODE',
       'authorization-code',

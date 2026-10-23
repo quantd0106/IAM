@@ -404,7 +404,7 @@ describe('POST /oauth/token M6.4 real client authentication → GETDEL → PKCE'
       error_description: 'Invalid token request.',
     });
     await post(
-      { ...body, grant_type: 'refresh_token' },
+      { ...body, grant_type: 'client_credentials' },
       basic(body.client_id),
       400,
       {

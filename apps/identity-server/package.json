@@ -21,6 +21,7 @@
     "refresh-token-family:check": "tsx prisma/refresh-token-family.check.ts",
     "refresh-token:check": "tsx prisma/refresh-token.check.ts",
     "refresh-token-issuance:check": "tsx prisma/refresh-token-issuance.check.ts",
+    "refresh-token-grant:check": "tsx prisma/refresh-token-grant.check.ts",
     "client-secret:check": "node --env-file-if-exists=.env dist/client-registry/client-secret.check.js",
     "client-lookup:check": "tsx prisma/client-lookup.check.ts",
     "authorize:check": "tsx prisma/authorization-request.check.ts",
